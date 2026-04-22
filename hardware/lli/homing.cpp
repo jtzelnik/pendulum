@@ -140,16 +140,25 @@ bool homing_center_only(EncoderState& enc_carriage, EncoderState& enc_pendulum,
     std::cout << "[homing] carriage centered\n";
 
     // ── Wait for pendulum to settle ──────────────────────────────────────────
+    // Sample at 200 ms (5 Hz) so a ~1 Hz pendulum gets 5 samples per swing —
+    // the 1 Hz sampling used in the full homing() can alias a swinging pendulum
+    // into appearing stationary.  50 samples × 200 ms = 10 s minimum wait.
+    constexpr int SETTLE_SAMPLES     = 50;
+    constexpr int SETTLE_INTERVAL_MS = 200;
+
     std::cout << "[homing] waiting for pendulum to settle — press ENTER to abort\n";
     std::deque<long long> window;
-    for (int elapsed = 0; !done; ++elapsed) {
-        std::cout << "\r[homing] settling: " << std::setw(4) << elapsed
+    int elapsed_ms = 0;
+    while (!done) {
+        pause_ms(SETTLE_INTERVAL_MS);
+        elapsed_ms += SETTLE_INTERVAL_MS;
+        std::cout << "\r[homing] settling: " << std::setw(4) << (elapsed_ms / 1000)
                   << "s elapsed...   " << std::flush;
-        pause_ms(1000);
+
         window.push_back(enc_pendulum.count.load());
-        if ((int)window.size() > STABLE_WINDOW)
+        if ((int)window.size() > SETTLE_SAMPLES)
             window.pop_front();
-        if ((int)window.size() == STABLE_WINDOW) {
+        if ((int)window.size() == SETTLE_SAMPLES) {
             long long lo = *std::min_element(window.begin(), window.end());
             long long hi = *std::max_element(window.begin(), window.end());
             if (hi - lo < STABLE_TICKS) break;
