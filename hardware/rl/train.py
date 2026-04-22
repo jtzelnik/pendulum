@@ -20,6 +20,7 @@ Usage:
 """
 
 import math                     # atan2 / degrees for live angle display
+import random                  # randrange for warmup random actions
 import yaml                    # parse config.yaml — PyYAML
 import numpy as np             # np.mean for logging the per-episode loss
 import torch                   # cuda availability check
@@ -122,7 +123,8 @@ def main() -> None:
     best_return = -float("inf")          # track the best inference normalised return seen so far
 
     print(f"Training for {tr['max_steps']} env steps. "
-          f"Inference every {tr['eval_interval']} steps.")   # remind the user of the training budget
+          f"Warmup {tr['warmup_steps']} steps (random). "
+          f"Inference every {tr['eval_interval']} steps.")
 
     try:
         while total_steps < tr["max_steps"]:   # outer loop: run episodes until step budget is exhausted
@@ -132,7 +134,10 @@ def main() -> None:
 
             # ── episode collection ────────────────────────────────────────
             while True:                                                   # inner loop: one iteration = one 50 Hz LLI tick
-                action = agent.select_action(obs)                         # ε-greedy action (greedy=False by default)
+                if total_steps < tr["warmup_steps"]:                      # pure random exploration until buffer is seeded
+                    action = random.randrange(PendulumEnv.N_ACTIONS)      # ignore network — weights are meaningless before training
+                else:
+                    action = agent.select_action(obs)                     # ε-greedy once buffer has enough data
                 next_obs, reward, done, info = env.step(action)           # send command, block ~20 ms, receive result
                 agent.buffer.add(obs, action, reward, next_obs, done)     # store transition for later sampling
                 obs        = next_obs   # advance observation for the next action selection
