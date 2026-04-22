@@ -1,0 +1,28 @@
+connection:
+  host: "192.168.137.161"
+  port_state: 5555
+  port_cmd:   5556
+
+hardware:
+  duty: 230       # PWM duty for left/right action (0–255 scale, matches MOTOR_DUTY in pendulum_hw.h)
+  x_max: 0.35     # track half-length in metres; used in reward and limit detection
+
+episode:
+  max_steps:      800
+  limit_penalty: -400.0   # added to reward on episode_status == 1 (limit sensor hit)
+
+dqn:
+  learning_rate:           0.0003
+  epsilon:                 0.178   # fixed ε-greedy exploration rate (not decayed for DQN)
+  gamma:                   0.995
+  buffer_size:             50000
+  batch_size:              1024
+  target_update_interval:  1000    # environment steps between target-net syncs
+
+network:
+  hidden_sizes: [256, 256]   # two hidden layers, ReLU; input=5, output=3
+
+training:
+  max_steps:      150000
+  eval_interval:  5000        # run one greedy inference episode every N env steps
+  checkpoint_dir: "checkpoints"

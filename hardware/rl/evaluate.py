@@ -1,0 +1,128 @@
+"""
+Evaluate a saved DQN checkpoint in pure greedy inference mode.
+
+No gradient updates are performed.  Each episode starts from the standard
+homed initial condition (θ = 0, x = 0, velocities = 0) as set by the LLI
+homing sequence.  The normalised return (cumulative reward / max_steps) is
+printed after every episode and summarised at the end.
+
+Usage:
+    cd hardware/rl
+    python evaluate.py checkpoints/best.pt
+    python evaluate.py checkpoints/best.pt --episodes 5
+"""
+
+import argparse          # CLI argument parsing — checkpoint path and episode count
+import yaml              # parse config.yaml for all hardware / episode parameters
+import torch             # device selection (CPU / CUDA)
+import numpy as np       # mean / std for the summary line
+from pathlib import Path  # cross-platform path resolution for config.yaml
+
+from zmq_client import ZMQClient   # ZeroMQ transport to the Pi
+from env import PendulumEnv        # step() / reset() hardware wrapper
+from dqn import DQNAgent           # network weights loaded from checkpoint
+
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+def load_cfg(path: Path) -> dict:
+    """Read and parse config.yaml into a nested dict.
+
+    Args:
+        path: Path to the config.yaml file (resolved relative to this script).
+    Returns:
+        Nested dict matching the YAML structure.
+    """
+    with open(path) as f:          # open in text mode; yaml handles encoding
+        return yaml.safe_load(f)   # safe_load rejects arbitrary Python object constructors
+
+
+# ── main ──────────────────────────────────────────────────────────────────────
+
+def main() -> None:
+    """Parse arguments, load checkpoint, and run greedy evaluation episodes."""
+    parser = argparse.ArgumentParser(                      # set up the command-line interface
+        description="Run a saved DQN checkpoint on the real hardware."
+    )
+    parser.add_argument(                                    # positional argument: required checkpoint path
+        "checkpoint",
+        help="path to .pt checkpoint file, e.g. checkpoints/best.pt",
+    )
+    parser.add_argument(                                    # optional argument: number of episodes to evaluate
+        "--episodes",
+        type=int,
+        default=1,
+        help="number of greedy inference episodes to run (default: 1)",
+    )
+    args = parser.parse_args()   # parse sys.argv and populate args.checkpoint / args.episodes
+
+    cfg_path = Path(__file__).parent / "config.yaml"   # config.yaml lives alongside this script
+    cfg      = load_cfg(cfg_path)                       # parse all YAML sections
+
+    conn    = cfg["connection"]   # host / port_state / port_cmd
+    hw      = cfg["hardware"]     # duty / x_max
+    ep      = cfg["episode"]      # max_steps / limit_penalty
+    dqn_cfg = cfg["dqn"]          # lr / epsilon / gamma / batch_size / target_update_interval
+    net_cfg = cfg["network"]      # hidden_sizes — must match what was used during training
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"   # use GPU if present for faster inference
+
+    client = ZMQClient(                  # open ZMQ sockets to the Pi
+        conn["host"],                    # Pi IP from config.yaml
+        conn["port_state"],              # SUB → Pi's PUB port (5555)
+        conn["port_cmd"],                # PUSH → Pi's PULL port (5556)
+    )
+    env = PendulumEnv(                        # hardware environment wrapper
+        client        = client,               # ZMQ transport injected
+        duty          = hw["duty"],           # PWM magnitude for left/right (230)
+        x_max         = hw["x_max"],          # track half-length for reward (0.35 m)
+        max_steps     = ep["max_steps"],      # episode length cap (800)
+        limit_penalty = ep["limit_penalty"],  # reward penalty on limit hit (−400)
+    )
+    agent = DQNAgent(                                              # construct agent with same architecture as training
+        hidden_sizes           = net_cfg["hidden_sizes"],          # must match the saved checkpoint — [256, 256]
+        lr                     = dqn_cfg["learning_rate"],         # not used during eval; required by constructor
+        epsilon                = dqn_cfg["epsilon"],               # not used during eval (greedy=True bypasses it)
+        gamma                  = dqn_cfg["gamma"],                 # not used during eval; required by constructor
+        buffer_size            = 1,                                # buffer not used during evaluation; set to 1 to minimise memory
+        batch_size             = dqn_cfg["batch_size"],            # not used during eval; required by constructor
+        target_update_interval = dqn_cfg["target_update_interval"],   # not used during eval; required by constructor
+        device                 = device,                           # maps checkpoint tensors to the right device
+    )
+    agent.load(args.checkpoint)                      # restore policy_net, target_net, and optimizer state
+    print(f"Loaded {args.checkpoint}  ({device})")   # confirm which file and device are in use
+
+    returns = []   # collect normalised returns across episodes for the summary
+    try:
+        for i in range(args.episodes):          # run the requested number of evaluation episodes
+            obs   = env.reset()                  # block until LLI homing completes; get first observation
+            total = 0.0                          # raw cumulative reward for this episode
+            steps = 0                            # steps taken before episode ended
+
+            for _ in range(ep["max_steps"]):                          # cap at max_steps regardless of done
+                action = agent.select_action(obs, greedy=True)        # always take the best action — no exploration
+                obs, reward, done, info = env.step(action)            # send command, block ~20 ms, receive result
+                total += reward                                        # accumulate raw reward
+                steps += 1                                             # count steps for the log line
+                if done:                                               # episode ended early
+                    break                                              # stop collecting; exit the inner loop
+
+            norm = total / ep["max_steps"]   # normalised return: cumulative reward divided by max episode length
+            returns.append(norm)             # store for summary statistics
+            print(f"Episode {i+1:3d} | steps {steps:3d} | "
+                  f"norm_ret {norm:+.3f} | status {info['episode_status']}")   # one line per episode
+
+    except KeyboardInterrupt:   # Ctrl+C — stop gracefully without leaving the motor running
+        print("\nInterrupted.")
+
+    finally:                    # always run — ensure motor is stopped even on exception
+        env.estop()             # send emergency-stop command to the LLI
+        client.close()          # tear down ZMQ sockets cleanly
+
+    if returns:   # only print summary if at least one episode completed
+        print(f"\nMean norm_ret over {len(returns)} episodes: "
+              f"{np.mean(returns):+.3f}  ±  {np.std(returns):.3f}")   # mean ± std across evaluated episodes
+
+
+if __name__ == "__main__":
+    main()   # entry point when run directly: python evaluate.py checkpoints/best.pt
