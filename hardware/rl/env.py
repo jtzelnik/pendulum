@@ -1,5 +1,5 @@
 """
-Gymnasium-style environment wrapper around the live ZMQ connection to the LLI.
+Environment wrapper around the live ZMQ connection to the LLI.
 
 Observation vector (5-D, article eq. 4):
     [sin θ,  cos θ,  θ_dot,  x,  x_dot]
@@ -33,11 +33,7 @@ from zmq_client import ZMQClient   # transport layer; recv_state / send_cmd
 
 # ── PendulumEnv ───────────────────────────────────────────────────────────────
 class PendulumEnv:
-    """Real-hardware RL environment: one env step = one LLI control tick (20 ms).
-
-    Mirrors the Gymnasium (gym) interface — reset() / step() — so it can be
-    swapped for a simulation environment without changing the training loop.
-    """
+    """Real-hardware RL environment: one env step = one LLI control tick (20 ms)."""
 
     N_ACTIONS = 3   # left / coast / right — matches the three motor commands in the article
     OBS_DIM   = 5   # [sin θ, cos θ, θ_dot, x, x_dot] — matches the ANN input layer size
