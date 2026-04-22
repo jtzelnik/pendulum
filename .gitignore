@@ -1,0 +1,25 @@
+# build artifacts
+build/
+*.o
+*.out
+
+# binaries
+main
+*.exe
+
+# logs
+*.log
+
+# editor
+.vscode/
+*.swp
+
+# OS
+
+.DS_Store
+
+#Claude
+CLAUDE.md
+
+# wsl windows artificts 
+*:Zone.Identifier
