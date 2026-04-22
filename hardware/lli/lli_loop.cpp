@@ -1,4 +1,5 @@
 #include "lli_loop.h"   // MotorCommand, lli_loop declaration, StateEstimator, set_motor, pin constants
+#include "homing.h"     // homing() — re-home after each episode terminal
 #include <zmq.h>        // ZeroMQ C API — context, sockets, send/recv
 #include <iostream>     // std::cout for startup messages
 #include <thread>       // std::this_thread::sleep_until
