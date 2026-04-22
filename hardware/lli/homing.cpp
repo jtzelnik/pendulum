@@ -102,3 +102,64 @@ bool homing(EncoderState& enc_carriage, EncoderState& enc_pendulum,
     std::cout << "[homing] pendulum encoder zeroed — homing complete\n\n";
     return true;                                               // homing succeeded; system ready for control
 }
+
+bool homing_center_only(EncoderState& enc_carriage, EncoderState& enc_pendulum,
+                        std::atomic<bool>& done)
+{
+    std::cout << "[homing] fast re-home: driving to center\n";
+
+    // ── Back off if at either limit ──────────────────────────────────────────
+    if (gpioRead(PROX_NEAR) != 0) {
+        std::cout << "[homing] at near limit — backing off\n";
+        set_motor(0, HOMING_DUTY);                               // drive right to clear sensor
+        while (gpioRead(PROX_NEAR) != 0 && !done) pause_ms(5);
+        set_motor(0, 0);
+        pause_ms(300);
+    } else if (gpioRead(PROX_FAR) != 0) {
+        std::cout << "[homing] at far limit — backing off\n";
+        set_motor(HOMING_DUTY, 0);                               // drive left to clear sensor
+        while (gpioRead(PROX_FAR)  != 0 && !done) pause_ms(5);
+        set_motor(0, 0);
+        pause_ms(300);
+    }
+    if (done) return false;
+
+    // ── Drive to encoder zero (centre) ───────────────────────────────────────
+    // Positive count = right of centre; negative = left.
+    long long pos = enc_carriage.count.load();
+    if (pos > 0) {
+        set_motor(HOMING_DUTY, 0);                               // right of centre — drive left
+        while (enc_carriage.count.load() > 0 && !done) pause_ms(5);
+    } else if (pos < 0) {
+        set_motor(0, HOMING_DUTY);                               // left of centre — drive right
+        while (enc_carriage.count.load() < 0 && !done) pause_ms(5);
+    }
+    set_motor(0, 0);
+    if (done) return false;
+    enc_carriage.count.store(0);
+    std::cout << "[homing] carriage centered\n";
+
+    // ── Wait for pendulum to settle ──────────────────────────────────────────
+    std::cout << "[homing] waiting for pendulum to settle — press ENTER to abort\n";
+    std::deque<long long> window;
+    for (int elapsed = 0; !done; ++elapsed) {
+        std::cout << "\r[homing] settling: " << std::setw(4) << elapsed
+                  << "s elapsed...   " << std::flush;
+        pause_ms(1000);
+        window.push_back(enc_pendulum.count.load());
+        if ((int)window.size() > STABLE_WINDOW)
+            window.pop_front();
+        if ((int)window.size() == STABLE_WINDOW) {
+            long long lo = *std::min_element(window.begin(), window.end());
+            long long hi = *std::max_element(window.begin(), window.end());
+            if (hi - lo < STABLE_TICKS) break;
+        }
+    }
+    if (done) return false;
+    std::cout << "\n[homing] pendulum settled\n";
+
+    // ── Zero pendulum encoder ────────────────────────────────────────────────
+    enc_pendulum.count.store(0);
+    std::cout << "[homing] pendulum encoder zeroed — re-home complete\n\n";
+    return true;
+}

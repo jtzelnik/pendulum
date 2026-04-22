@@ -55,7 +55,10 @@ class ZMQClient:
         NOBLOCK means the call returns immediately even if the network is
         slow — the HWM=1 setting ensures only the latest command is queued.
         """
-        self._push.send(pack_cmd(duty, estop), zmq.NOBLOCK)   # pack to 8-byte wire format and send; drops silently if HWM reached
+        try:
+            self._push.send(pack_cmd(duty, estop), zmq.NOBLOCK)
+        except zmq.error.Again:
+            pass   # HWM reached — drop this command; the Pi will get the next one
 
     def flush(self) -> None:
         """Drain all stale StatePackets that accumulated during homing.

@@ -34,6 +34,7 @@ void lli_loop(EncoderState& enc_carriage, EncoderState& enc_pendulum,
     // ── Loop state ───────────────────────────────────────────────────────────
     StateEstimator estimator;      // owns the EMA filter state across ticks
     MotorCommand   cmd{0, 0};      // last received command; initialised to coast
+    int episode_count = 0;         // re-homes completed; full homing every 10 episodes
 
     using clock = std::chrono::steady_clock;   // monotonic clock alias
     auto next_tick = clock::now();             // absolute time of the next scheduled tick
@@ -65,8 +66,14 @@ void lli_loop(EncoderState& enc_carriage, EncoderState& enc_pendulum,
         if (pkt.episode_status != 0) {                                    // a terminal condition was detected this tick
             set_motor(0, 0);                                              // immediately stop motor
             cmd = {0, 0};                                                 // reset stored command to coast so stale duty doesn't persist
-            std::cout << "[lli] episode ended (status=" << (int)pkt.episode_status << ") — re-homing\n";
-            if (!homing(enc_carriage, enc_pendulum, done)) break;         // run full re-home; exit loop if interrupted
+            ++episode_count;
+            bool full = (episode_count % 10 == 0);                        // full homing every 10 episodes
+            std::cout << "[lli] episode ended (status=" << (int)pkt.episode_status
+                      << ", ep=" << episode_count
+                      << ") — " << (full ? "full homing" : "center re-home") << "\n";
+            bool ok = full ? homing(enc_carriage, enc_pendulum, done)
+                           : homing_center_only(enc_carriage, enc_pendulum, done);
+            if (!ok) break;                                               // exit loop if interrupted during homing
             estimator = StateEstimator{};                                 // reset filter state so velocities don't carry over from previous episode
             next_tick = clock::now();                                     // reset tick baseline so first post-home tick isn't overdue
             std::cout << "[lli] re-homed — resuming control\n";

@@ -7,6 +7,16 @@ build/
 main
 *.exe
 
+# model checkpoints
+*.pt
+hardware/rl/checkpoints/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+hardware/rl/venv/
+
 # logs
 *.log
 

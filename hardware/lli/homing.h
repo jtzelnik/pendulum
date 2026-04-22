@@ -14,3 +14,11 @@
 // any phase (e.g. user pressed ENTER or SIGINT received).
 bool homing(EncoderState& enc_carriage, EncoderState& enc_pendulum,
             std::atomic<bool>& done);
+
+// Fast re-home used between most episodes: skips the limit scan and drives
+// directly back to encoder zero (the centre established by the last full
+// homing), then waits for the pendulum to settle and re-zeros it.
+// Requires that a full homing has already been performed so the encoder
+// reference is valid.  Backs off from either limit if triggered before driving.
+bool homing_center_only(EncoderState& enc_carriage, EncoderState& enc_pendulum,
+                        std::atomic<bool>& done);
