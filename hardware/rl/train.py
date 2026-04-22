@@ -19,6 +19,7 @@ Usage:
     python train.py
 """
 
+import math                     # atan2 / degrees for live angle display
 import yaml                    # parse config.yaml — PyYAML
 import numpy as np             # np.mean for logging the per-episode loss
 import torch                   # cuda availability check
@@ -84,11 +85,13 @@ def main() -> None:
     net_cfg = cfg["network"]      # hidden_sizes
     tr      = cfg["training"]     # max_steps / eval_interval / checkpoint_dir
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"   # use GPU if present; training is fast enough on CPU for this problem
-    print(f"device: {device}")                                 # log which device was selected
+    print(f"Connecting to Pi at {conn['host']}:{conn['port_state']}/{conn['port_cmd']}  —  press Ctrl+C to abort\n")
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"device: {device}")
 
     client = ZMQClient(                    # open ZMQ sockets to the Pi before constructing the env
-        conn["host"],                      # Pi's IP on the laptop hotspot
+        conn["host"],                      # Pi's static ethernet IP (192.168.10.2)
         conn["port_state"],                # SUB connects to LLI's PUB (5555)
         conn["port_cmd"],                  # PUSH connects to LLI's PULL (5556)
     )
@@ -136,19 +139,29 @@ def main() -> None:
                 ep_steps  += 1          # count steps for the gradient-step budget
                 total_steps += 1        # advance the global step counter
 
-                ep_return += reward     # accumulate raw reward for logging
+                ep_return += reward
 
-                if total_steps % dqn_cfg["target_update_interval"] == 0:   # check on every env step, not every episode
-                    agent.update_target()                                    # hard-copy policy_net → target_net every C steps
+                theta_deg  = math.degrees(math.atan2(obs[0], obs[1]))
+                action_chr = ("L", "·", "R")[action]
+                print(
+                    f"\r  ep {episode+1:4d}  step {ep_steps:3d}/{ep['max_steps']}"
+                    f"  [{action_chr}]  θ={theta_deg:+6.1f}°  x={obs[3]:+.3f}m"
+                    f"  r={reward:+.4f}  Σ={ep_return:+8.2f}",
+                    end="", flush=True,
+                )
 
-                if done:    # episode ended: limit hit, angular-vel exceeded, or max_steps reached
-                    break   # exit inner loop; proceed to end-of-episode training
+                if total_steps % dqn_cfg["target_update_interval"] == 0:
+                    agent.update_target()
 
-            episode += 1                                        # increment after the episode completes
-            norm_ret = ep_return / ep["max_steps"]              # normalised return for this episode
+                if done:
+                    break
+
+            episode += 1
+            norm_ret = ep_return / ep["max_steps"]
+            print(f"\r{' '*100}\r", end="")   # clear the live step line
             print(f"ep {episode:4d} | steps {total_steps:6d} | "
                   f"len {ep_steps:3d} | norm_ret {norm_ret:+.3f} | "
-                  f"status {info['episode_status']}")           # log one line per episode
+                  f"status {info['episode_status']}")
 
             # ── end-of-episode training ───────────────────────────────────
             if len(agent.buffer) >= dqn_cfg["batch_size"]:     # only train once the buffer has enough data for a full batch

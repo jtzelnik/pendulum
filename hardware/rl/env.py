@@ -100,9 +100,10 @@ class PendulumEnv:
         is received, which signals that homing is complete and the new episode
         has started.
         """
-        self._step_count = 0          # reset the per-episode step counter before the new episode
-        self._client.flush()          # discard any stale packets that queued during homing
-        while True:                   # spin until the LLI confirms the episode is running
+        self._step_count = 0
+        self._client.flush()
+        print("  [reset] waiting for homing to complete ...", flush=True)
+        while True:
             pkt = self._client.recv_state()        # blocking recv; returns immediately once packets resume
             if pkt.episode_status == 0:            # 0 = running — homing is finished and episode is live
                 return self._obs(pkt)              # return the first observation of the new episode

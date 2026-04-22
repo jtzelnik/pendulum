@@ -13,6 +13,7 @@ Usage:
 """
 
 import argparse          # CLI argument parsing — checkpoint path and episode count
+import math              # atan2 / degrees for live angle display
 import yaml              # parse config.yaml for all hardware / episode parameters
 import torch             # device selection (CPU / CUDA)
 import numpy as np       # mean / std for the summary line
@@ -65,7 +66,9 @@ def main() -> None:
     dqn_cfg = cfg["dqn"]          # lr / epsilon / gamma / batch_size / target_update_interval
     net_cfg = cfg["network"]      # hidden_sizes — must match what was used during training
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"   # use GPU if present for faster inference
+    print(f"Connecting to Pi at {conn['host']}:{conn['port_state']}/{conn['port_cmd']}  —  press Ctrl+C to abort\n")
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
 
     client = ZMQClient(                  # open ZMQ sockets to the Pi
         conn["host"],                    # Pi IP from config.yaml
@@ -99,18 +102,27 @@ def main() -> None:
             total = 0.0                          # raw cumulative reward for this episode
             steps = 0                            # steps taken before episode ended
 
-            for _ in range(ep["max_steps"]):                          # cap at max_steps regardless of done
-                action = agent.select_action(obs, greedy=True)        # always take the best action — no exploration
-                obs, reward, done, info = env.step(action)            # send command, block ~20 ms, receive result
-                total += reward                                        # accumulate raw reward
-                steps += 1                                             # count steps for the log line
-                if done:                                               # episode ended early
-                    break                                              # stop collecting; exit the inner loop
+            for _ in range(ep["max_steps"]):
+                action = agent.select_action(obs, greedy=True)
+                obs, reward, done, info = env.step(action)
+                total += reward
+                steps += 1
+                theta_deg  = math.degrees(math.atan2(obs[0], obs[1]))
+                action_chr = ("L", "·", "R")[action]
+                print(
+                    f"\r  ep {i+1:3d}  step {steps:3d}/{ep['max_steps']}"
+                    f"  [{action_chr}]  θ={theta_deg:+6.1f}°  x={obs[3]:+.3f}m"
+                    f"  r={reward:+.4f}  Σ={total:+8.2f}",
+                    end="", flush=True,
+                )
+                if done:
+                    break
 
-            norm = total / ep["max_steps"]   # normalised return: cumulative reward divided by max episode length
-            returns.append(norm)             # store for summary statistics
+            norm = total / ep["max_steps"]
+            returns.append(norm)
+            print(f"\r{' '*100}\r", end="")   # clear the live step line
             print(f"Episode {i+1:3d} | steps {steps:3d} | "
-                  f"norm_ret {norm:+.3f} | status {info['episode_status']}")   # one line per episode
+                  f"norm_ret {norm:+.3f} | status {info['episode_status']}")
 
     except KeyboardInterrupt:   # Ctrl+C — stop gracefully without leaving the motor running
         print("\nInterrupted.")
