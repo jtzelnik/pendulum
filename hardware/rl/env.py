@@ -92,20 +92,36 @@ class PendulumEnv:
     # ── public API ────────────────────────────────────────────────────────────
 
     def reset(self) -> np.ndarray:
-        """Wait for the LLI to finish homing and return the initial observation.
+        """Request homing, wait for the LLI to complete it, return the first observation.
 
-        Blocks until a packet with episode_status == 0 is received, which
-        signals that homing is complete and the new episode has started.
-        Caller is responsible for having sent request_home before calling this
-        when the previous episode ended at max_steps (status=0).
+        Keeps re-sending request_home (every ~150 ms) until the LLI goes silent,
+        which confirms the command was received and homing has started.  Then
+        blocks until packets resume with episode_status == 0.
+
+        This retry loop handles the ZMQ HWM race where a single request_home can
+        be dropped if the LLI's PULL buffer still holds the last motor command.
         """
         self._step_count = 0
         self._client.flush()
-        print("  [reset] waiting for homing to complete ...", flush=True)
+        print("  [reset] requesting home ...", flush=True)
+
+        # Phase 1 — keep sending request_home until the LLI stops publishing.
+        # If a packet arrives within 150 ms the command wasn't acted on yet; flush
+        # stale packets and try again.  Once no packet arrives in 150 ms the LLI is
+        # in its homing routine (which is blocking on the Pi side).
         while True:
-            pkt = self._client.recv_state()        # blocking recv; returns immediately once packets resume
-            if pkt.episode_status == 0:            # 0 = running — homing is finished and episode is live
-                return self._obs(pkt)              # return the first observation of the new episode
+            self._client.send_cmd(0, request_home=True)
+            if not self._client.poll(150):   # 150 ms > 7 ticks — silence means homing started
+                break
+            self._client.flush()             # drain packets that arrived while polling
+
+        # Phase 2 — homing is in progress; block until it finishes and the LLI
+        # resumes publishing normal (status=0) packets.
+        print("  [reset] homing in progress ...", flush=True)
+        while True:
+            pkt = self._client.recv_state()
+            if pkt.episode_status == 0:
+                return self._obs(pkt)
 
     def step(self, action: int):
         """Send one motor command and receive the resulting state.

@@ -13,7 +13,7 @@ episode:
 
 dqn:
   learning_rate:           0.0003
-  epsilon:                 0.178   # fixed ε-greedy exploration rate (not decayed for DQN)
+  epsilon:                 0.2   # fixed ε-greedy exploration rate (not decayed for DQN)
   gamma:                   0.995
   buffer_size:             50000
   batch_size:              1024
@@ -24,6 +24,6 @@ network:
 
 training:
   max_steps:      150000
-  warmup_steps:   2500        # take fully random actions for this many steps before using the network
+  warmup_steps:   5000        # take fully random actions for this many steps before using the network
   eval_interval:  5           # run one greedy inference episode every N episodes
   checkpoint_dir: "checkpoints"

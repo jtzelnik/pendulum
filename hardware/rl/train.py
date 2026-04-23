@@ -21,7 +21,6 @@ Usage:
 
 import math                     # atan2 / degrees for live angle display
 import random                  # randrange for warmup random actions
-import time                    # sleep after sending home request
 import yaml                    # parse config.yaml — PyYAML
 import numpy as np             # np.mean for logging the per-episode loss
 import torch                   # cuda availability check
@@ -177,13 +176,6 @@ def main() -> None:
                 losses = [agent.train_step() for _ in range(ep_steps)]
                 print(f"         loss {np.mean(losses):.4f}")
 
-            # ── re-home before next episode ───────────────────────────────
-            # Episodes ending at max_steps (status=0) don't trigger automatic
-            # re-homing on the LLI. Always request one here so env.reset() at
-            # the top of the next iteration actually blocks for a clean start.
-            client.send_cmd(0, request_home=True)
-            time.sleep(0.5)
-
             # ── inference evaluation ──────────────────────────────────────
             if episode >= next_eval_ep:
                 inf_ret, _ = run_inference(env, agent, ep["max_steps"])
@@ -198,11 +190,6 @@ def main() -> None:
                     print(f"  new best: {best_return:.3f}  →  best.pt\n")
 
                 next_eval_ep += tr["eval_interval"]
-
-                # Re-home after inference so the next training episode also
-                # starts clean (inference likely ended at max_steps, status=0).
-                client.send_cmd(0, request_home=True)
-                time.sleep(0.5)
 
     except KeyboardInterrupt:   # Ctrl+C pressed — exit gracefully rather than leaving the motor running
         print("\nInterrupted.")

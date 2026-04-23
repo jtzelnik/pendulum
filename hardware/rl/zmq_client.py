@@ -56,6 +56,10 @@ class ZMQClient:
         except zmq.error.Again:
             pass   # HWM reached — drop this command; the Pi will get the next one
 
+    def poll(self, timeout_ms: int) -> bool:
+        """Return True if a StatePacket is available within timeout_ms, else False."""
+        return bool(self._sub.poll(timeout=timeout_ms))
+
     def flush(self) -> None:
         """Drain all stale StatePackets that accumulated during homing.
 
