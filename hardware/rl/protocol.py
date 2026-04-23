@@ -34,8 +34,9 @@ assert STATE_SIZE == 48, f"StatePacket size mismatch: {STATE_SIZE}"   # die loud
 # '<' = little-endian.
 # i  = int32  (4 bytes) — duty
 # B  = uint8  (1 byte)  — estop
-# 3x = 3 pad bytes      — matches trailing pad that aligns sizeof(MotorCommand) to 4
-_CMD_FMT = "<iB3x"                               # format string passed to struct.pack
+# B  = uint8  (1 byte)  — request_home
+# 2x = 2 pad bytes      — matches trailing pad that aligns sizeof(MotorCommand) to 4
+_CMD_FMT = "<iBB2x"                              # format string passed to struct.pack
 CMD_SIZE  = struct.calcsize(_CMD_FMT)             # compute byte length at import time (expected: 8)
 assert CMD_SIZE == 8, f"MotorCommand size mismatch: {CMD_SIZE}"    # die loudly if layout is wrong
 
@@ -64,10 +65,6 @@ def unpack_state(data: bytes) -> StatePacket:
 
 
 # ── Encode helper ─────────────────────────────────────────────────────────────
-def pack_cmd(duty: int, estop: bool = False) -> bytes:
-    """Serialise a motor command into raw bytes ready for ZeroMQ send.
-
-    The LLI checks that the received message is exactly CMD_SIZE (8) bytes,
-    so the trailing pad bytes produced by '<iB3x' are essential.
-    """
-    return struct.pack(_CMD_FMT, int(duty), int(estop))   # cast to int/int so Python bools don't cause type errors
+def pack_cmd(duty: int, estop: bool = False, request_home: bool = False) -> bytes:
+    """Serialise a motor command into raw bytes ready for ZeroMQ send."""
+    return struct.pack(_CMD_FMT, int(duty), int(estop), int(request_home))

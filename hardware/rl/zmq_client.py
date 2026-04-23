@@ -49,14 +49,10 @@ class ZMQClient:
         """
         return unpack_state(self._sub.recv())   # recv() blocks; returns raw bytes; unpack_state decodes to StatePacket
 
-    def send_cmd(self, duty: int, estop: bool = False) -> None:
-        """Send one MotorCommand to the LLI without blocking.
-
-        NOBLOCK means the call returns immediately even if the network is
-        slow — the HWM=1 setting ensures only the latest command is queued.
-        """
+    def send_cmd(self, duty: int, estop: bool = False, request_home: bool = False) -> None:
+        """Send one MotorCommand to the LLI without blocking."""
         try:
-            self._push.send(pack_cmd(duty, estop), zmq.NOBLOCK)
+            self._push.send(pack_cmd(duty, estop, request_home), zmq.NOBLOCK)
         except zmq.error.Again:
             pass   # HWM reached — drop this command; the Pi will get the next one
 

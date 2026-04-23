@@ -25,5 +25,5 @@ network:
 training:
   max_steps:      150000
   warmup_steps:   5000        # take fully random actions for this many steps before using the network
-  eval_interval:  5000        # run one greedy inference episode every N env steps
+  eval_interval:  5           # run one greedy inference episode every N episodes
   checkpoint_dir: "checkpoints"

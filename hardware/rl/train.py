@@ -21,6 +21,7 @@ Usage:
 
 import math                     # atan2 / degrees for live angle display
 import random                  # randrange for warmup random actions
+import time                    # sleep after sending home request
 import yaml                    # parse config.yaml — PyYAML
 import numpy as np             # np.mean for logging the per-episode loss
 import torch                   # cuda availability check
@@ -45,31 +46,34 @@ def load_cfg(path: Path) -> dict:
         return yaml.safe_load(f)   # safe_load prevents arbitrary Python object construction from the YAML
 
 
-def run_inference(env: PendulumEnv, agent: DQNAgent, max_steps: int) -> float:
-    """Execute one greedy episode and return the normalised return.
+def run_inference(env: PendulumEnv, agent: DQNAgent, max_steps: int):
+    """Execute one greedy episode. Returns (norm_ret, done).
 
-    Normalised return = cumulative_reward / max_steps, as defined in the
-    article.  The maximum is 1.0 (upright, centred, full episode); the
-    minimum is −0.5 (cart hits a stop on step 1, −400 penalty).
-
-    No gradient updates are performed during inference.
-
-    Args:
-        env:       Live hardware environment.
-        agent:     DQNAgent in greedy mode (ε is ignored).
-        max_steps: Episode length budget used as the normalisation divisor.
-    Returns:
-        Normalised return in [−0.5, 1.0].
+    done=True means the LLI triggered a natural terminal (limit or ang-vel)
+    and will re-home on its own. done=False means the episode ran to max_steps
+    and the caller must request a re-home before the next training episode.
     """
-    obs   = env.reset()   # wait for homing to complete and receive the first observation
-    total = 0.0           # accumulate raw (un-normalised) reward over the episode
-    for _ in range(max_steps):                          # cap at max_steps even if done is not raised
-        action = agent.select_action(obs, greedy=True)  # greedy=True bypasses ε-random exploration
-        obs, reward, done, _ = env.step(action)         # send command, receive next state and reward
-        total += reward                                  # accumulate reward for normalisation
-        if done:                                         # episode ended early (limit or angular-vel)
-            break                                        # stop collecting; remaining steps contribute 0
-    return total / max_steps   # normalised return: 1.0 = perfect episode, −0.5 = instant limit hit
+    obs   = env.reset()
+    total = 0.0
+    steps = 0
+    done  = False
+    for _ in range(max_steps):
+        action = agent.select_action(obs, greedy=True)
+        obs, reward, done, _ = env.step(action)
+        total += reward
+        steps += 1
+        theta_deg  = math.degrees(math.atan2(obs[0], obs[1]))
+        action_chr = ("L", "·", "R")[action]
+        print(
+            f"\r  [inf] step {steps:4d}/{max_steps}"
+            f"  [{action_chr}]  θ={theta_deg:+6.1f}°  x={obs[3]:+.3f}m"
+            f"  r={reward:+.4f}  Σ={total:+8.2f}",
+            end="", flush=True,
+        )
+        if done:
+            break
+    print(f"\r{' '*100}\r", end="")
+    return total / max_steps, done
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
@@ -117,14 +121,14 @@ def main() -> None:
     ckpt_dir = Path(__file__).parent / tr["checkpoint_dir"]   # resolve checkpoint dir relative to this script
     ckpt_dir.mkdir(parents=True, exist_ok=True)               # create the directory tree if it doesn't already exist
 
-    total_steps = 0              # cumulative environment steps across all episodes; main termination criterion
-    episode     = 0              # episode counter used only for the log line
-    next_eval   = tr["eval_interval"]    # next total_steps value at which to run an inference episode
-    best_return = -float("inf")          # track the best inference normalised return seen so far
+    total_steps   = 0                        # cumulative environment steps across all episodes
+    episode       = 0                        # episode counter; main loop increments after each episode
+    next_eval_ep  = tr["eval_interval"]      # episode number at which to run the next inference
+    best_return   = -float("inf")
 
     print(f"Training for {tr['max_steps']} env steps. "
           f"Warmup {tr['warmup_steps']} steps (random). "
-          f"Inference every {tr['eval_interval']} steps.")
+          f"Inference every {tr['eval_interval']} episodes.")
 
     try:
         while total_steps < tr["max_steps"]:   # outer loop: run episodes until step budget is exhausted
@@ -174,19 +178,32 @@ def main() -> None:
                 print(f"         loss {np.mean(losses):.4f}")             # log mean Huber loss over this batch of gradient steps
 
             # ── inference evaluation ──────────────────────────────────────
-            if total_steps >= next_eval:                          # triggered once per eval_interval env steps
-                inf_ret = run_inference(env, agent, ep["max_steps"])      # one greedy episode; no exploration
+            if episode >= next_eval_ep:
+                # Re-home before inference so it starts from a clean state.
+                # Sleep 100 ms after sending so the LLI has time to receive
+                # the command and stop publishing before env.reset() flushes.
+                client.send_cmd(0, request_home=True)
+                time.sleep(0.1)
+
+                inf_ret, inf_done = run_inference(env, agent, ep["max_steps"])
                 print(f"\n  [inference @ {total_steps}] norm_ret {inf_ret:+.3f}")
 
-                ckpt = ckpt_dir / f"dqn_{total_steps:06d}.pt"    # filename encodes the step count for easy sorting
-                agent.save(str(ckpt))                             # save a timestamped checkpoint
+                ckpt = ckpt_dir / f"dqn_{total_steps:06d}.pt"
+                agent.save(str(ckpt))
 
-                if inf_ret > best_return:                         # new best policy found
-                    best_return = inf_ret                         # update the running best
-                    agent.save(str(ckpt_dir / "best.pt"))         # overwrite best.pt with the improved policy
+                if inf_ret > best_return:
+                    best_return = inf_ret
+                    agent.save(str(ckpt_dir / "best.pt"))
                     print(f"  new best: {best_return:.3f}  →  best.pt\n")
 
-                next_eval += tr["eval_interval"]   # advance the trigger to the next evaluation milestone
+                next_eval_ep += tr["eval_interval"]
+
+                # If inference ended cleanly (max_steps, no natural terminal),
+                # the LLI hasn't re-homed — request one so the next training
+                # episode starts fresh too.
+                if not inf_done:
+                    client.send_cmd(0, request_home=True)
+                    time.sleep(0.1)
 
     except KeyboardInterrupt:   # Ctrl+C pressed — exit gracefully rather than leaving the motor running
         print("\nInterrupted.")
