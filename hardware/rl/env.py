@@ -55,6 +55,7 @@ class PendulumEnv:
         self._limit_penalty = limit_penalty  # −400 — subtracted from reward when proximity sensor fires
         self._actions       = [-duty, 0, duty]  # action index → signed PWM duty; index 0=left, 1=coast, 2=right
         self._step_count    = 0              # steps taken since the last reset; checked against max_steps
+        self._first_reset   = True           # lli_main.cpp homes before lli_loop starts; skip request_home on the very first call
 
     # ── private helpers ───────────────────────────────────────────────────────
 
@@ -117,6 +118,19 @@ class PendulumEnv:
         if not self._client.poll(300_000):   # 5-minute ceiling covers worst-case startup homing
             raise RuntimeError("LLI not responding after 5 minutes — is the Pi running?")
         self._client.flush()   # discard startup packets; begin Phase 1 from a clean queue
+
+         # In reset(), between Phase 0 and Phase 1:
+        if self._first_reset:
+            self._first_reset = False
+            # LLI just completed startup homing — skip Phase 1, go straight to Phase 2
+        else:
+            # Phase 1 — trigger re-home between episodes
+            while True:
+                self._client.send_cmd(0, request_home=True)
+                if not self._client.poll(500):
+                    break
+                self._client.flush()
+            self._client.flush()
 
         # Phase 1 — resend request_home until the LLI stops publishing for 500 ms.
         print("  [reset] requesting home ...", flush=True)
