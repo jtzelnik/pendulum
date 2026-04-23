@@ -30,7 +30,7 @@ StatePacket StateEstimator::update(const EncoderState& enc_carriage,
                            now.time_since_epoch()).count();
     pkt.x         = static_cast<double>(c1) * METERS_PER_COUNT;
     pkt.theta     = static_cast<double>(c2) * RAD_PER_COUNT;
-    // 2nd-order Butterworth LP (Fc=10 Hz, Fs=50 Hz) applied to raw finite-difference velocity
+    // 2nd-order Butterworth LP (Fc=20 Hz, Fs=50 Hz) applied to raw finite-difference velocity
     pkt.x_dot     = bq_xdot.tick (raw_xdot,  VEL_B0, VEL_B1, VEL_B2, VEL_A1, VEL_A2);
     pkt.theta_dot = bq_thdot.tick(raw_thdot, VEL_B0, VEL_B1, VEL_B2, VEL_A1, VEL_A2);
     return pkt;

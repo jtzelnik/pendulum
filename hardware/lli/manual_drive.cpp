@@ -111,7 +111,7 @@ int main() {
         << std::setw(10) << "dt(ms)"
         << '\n';                                       // print column header row
 
-    StateEstimator estimator;   // owns EMA filter state across loop iterations
+    StateEstimator estimator;   // owns Butterworth filter state across loop iterations
     int64_t prev_ts = 0;        // timestamp of previous packet, used to compute actual dt for display
 
     using clock = std::chrono::steady_clock;   // monotonic clock alias

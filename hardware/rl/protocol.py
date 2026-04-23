@@ -54,9 +54,9 @@ class StatePacket(NamedTuple):
     """Decoded observation received from the LLI over ZeroMQ."""
     timestamp_us:   int    # wall-clock tick time in microseconds since steady_clock epoch
     x:              float  # carriage position in metres (0 = rail centre)
-    x_dot:          float  # carriage velocity in m/s (EMA filtered)
+    x_dot:          float  # carriage velocity in m/s (Butterworth-filtered)
     theta:          float  # pendulum angle in radians (0 = hanging down)
-    theta_dot:      float  # pendulum angular velocity in rad/s (EMA filtered)
+    theta_dot:      float  # pendulum angular velocity in rad/s (Butterworth-filtered)
     episode_status: int    # 0=running  1=limit hit  2=angular-velocity exceeded  3=homing started (request_home ack)
 
 

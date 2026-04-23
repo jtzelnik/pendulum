@@ -17,13 +17,16 @@ inline constexpr double    DT               = 0.02;                             
 inline constexpr double    PI               = 3.14159265358979323846;            // pi to full double precision
 
 // 2nd-order Butterworth low-pass filter coefficients for velocity estimation.
-// Design: Fs = 50 Hz, Fc = 10 Hz, bilinear transform (K = tan(π·Fc/Fs) = 0.72654).
+// Design: Fs = 50 Hz, Fc = 20 Hz, bilinear transform (K = tan(π·Fc/Fs) = 3.07768).
+// Fc=20 Hz is 80% of Nyquist — minimal lag, maximum responsiveness.
+// Note: A1 is positive because Fc > Fs/4 (12.5 Hz); the filter is still stable
+// (pole magnitude = sqrt(A2) = 0.642 < 1).
 // Difference equation: y[n] = B0·x[n] + B1·x[n-1] + B2·x[n-2] − A1·y[n-1] − A2·y[n-2]
-inline constexpr double    VEL_B0 =  0.20657;
-inline constexpr double    VEL_B1 =  0.41314;
-inline constexpr double    VEL_B2 =  0.20657;
-inline constexpr double    VEL_A1 = -0.36953;
-inline constexpr double    VEL_A2 =  0.19582;
+inline constexpr double    VEL_B0 =  0.63888;
+inline constexpr double    VEL_B1 =  1.27776;
+inline constexpr double    VEL_B2 =  0.63888;
+inline constexpr double    VEL_A1 =  1.14282;
+inline constexpr double    VEL_A2 =  0.41259;
 inline constexpr double    METERS_PER_COUNT = (PI * 0.051) / COUNTS_PER_REV;   // linear distance per encoder count (pulley circumference / counts)
 inline constexpr double    RAD_PER_COUNT    = (2.0 * PI)   / COUNTS_PER_REV;   // angular distance per encoder count (full circle / counts)
 

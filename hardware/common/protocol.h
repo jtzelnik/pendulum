@@ -10,9 +10,9 @@
 struct StatePacket {
     int64_t  timestamp_us;    // wall-clock time of this tick in microseconds since steady_clock epoch; client uses consecutive values to compute actual dt
     double   x;               // carriage position in metres; zero = rail centre after homing
-    double   x_dot;           // carriage velocity in m/s; exponential moving-average filtered
+    double   x_dot;           // carriage velocity in m/s; Butterworth-filtered
     double   theta;           // pendulum angle in radians; zero = hanging straight down after homing
-    double   theta_dot;       // pendulum angular velocity in rad/s; exponential moving-average filtered
+    double   theta_dot;       // pendulum angular velocity in rad/s; Butterworth-filtered
     uint8_t  episode_status;  // 0 = episode running normally; 1 = proximity limit sensor triggered; 2 = |theta_dot| exceeded 14 rad/s safety threshold; 3 = homing initiated by client request_home (published once before homing begins)
 };
 

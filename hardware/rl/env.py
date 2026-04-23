@@ -71,9 +71,9 @@ class PendulumEnv:
         return np.array([           # build a contiguous float32 array for PyTorch
             math.sin(pkt.theta),    # sin θ — encodes angle without wraparound discontinuity
             math.cos(pkt.theta),    # cos θ — together with sin gives unique representation for all angles
-            pkt.theta_dot,          # angular velocity in rad/s — already EMA-filtered by LLI
+            pkt.theta_dot,          # angular velocity in rad/s — already Butterworth-filtered by LLI
             pkt.x,                  # carriage position in metres (0 = centre)
-            pkt.x_dot,              # carriage velocity in m/s — already EMA-filtered by LLI
+            pkt.x_dot,              # carriage velocity in m/s — already Butterworth-filtered by LLI
         ], dtype=np.float32)        # float32 to match PyTorch default tensor dtype
 
     def _reward(self, pkt, terminal_status: int) -> float:
