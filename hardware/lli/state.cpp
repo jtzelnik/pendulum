@@ -1,4 +1,4 @@
-#include "state.h"   // StatePacket, StateEstimator, DT, ALPHA, METERS_PER_COUNT, RAD_PER_COUNT
+#include "state.h"   // StatePacket, StateEstimator, Biquad, DT, VEL_B*, VEL_A*, METERS_PER_COUNT, RAD_PER_COUNT
 
 // Computes one tick of state estimation.
 // Measures actual elapsed time since the last call so velocity is accurate
@@ -18,21 +18,20 @@ StatePacket StateEstimator::update(const EncoderState& enc_carriage,
     long long c1 = enc_carriage.count.load();      // atomically read current carriage encoder count
     long long c2 = enc_pendulum.count.load();      // atomically read current pendulum encoder count
 
-    // EMA velocity filter: new_vel = α * raw_vel + (1-α) * prev_vel
-    x_dot  = ALPHA * (static_cast<double>(c1 - prev_c1) * METERS_PER_COUNT / dt)   // raw carriage velocity this tick
-           + (1.0 - ALPHA) * x_dot;                                                 // blend with previous filtered value
-    th_dot = ALPHA * (static_cast<double>(c2 - prev_c2) * RAD_PER_COUNT    / dt)   // raw pendulum velocity this tick
-           + (1.0 - ALPHA) * th_dot;                                                // blend with previous filtered value
+    // Raw finite-difference velocities for this tick
+    double raw_xdot  = static_cast<double>(c1 - prev_c1) * METERS_PER_COUNT / dt;
+    double raw_thdot = static_cast<double>(c2 - prev_c2) * RAD_PER_COUNT    / dt;
 
-    prev_c1 = c1;   // store counts for next tick's delta calculation
-    prev_c2 = c2;   // store counts for next tick's delta calculation
+    prev_c1 = c1;
+    prev_c2 = c2;
 
-    StatePacket pkt;                                                                                    // construct output packet
-    pkt.timestamp_us = std::chrono::duration_cast<std::chrono::microseconds>(                          // convert time_point to integer microseconds
-                           now.time_since_epoch()).count();                                             // since clock epoch
-    pkt.x         = static_cast<double>(c1) * METERS_PER_COUNT;   // carriage position in metres
-    pkt.theta     = static_cast<double>(c2) * RAD_PER_COUNT;      // pendulum angle in radians
-    pkt.x_dot     = x_dot;                                         // filtered carriage velocity
-    pkt.theta_dot = th_dot;                                        // filtered pendulum angular velocity
-    return pkt;                                                    // return completed packet to caller
+    StatePacket pkt;
+    pkt.timestamp_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                           now.time_since_epoch()).count();
+    pkt.x         = static_cast<double>(c1) * METERS_PER_COUNT;
+    pkt.theta     = static_cast<double>(c2) * RAD_PER_COUNT;
+    // 2nd-order Butterworth LP (Fc=10 Hz, Fs=50 Hz) applied to raw finite-difference velocity
+    pkt.x_dot     = bq_xdot.tick (raw_xdot,  VEL_B0, VEL_B1, VEL_B2, VEL_A1, VEL_A2);
+    pkt.theta_dot = bq_thdot.tick(raw_thdot, VEL_B0, VEL_B1, VEL_B2, VEL_A1, VEL_A2);
+    return pkt;
 }

@@ -13,14 +13,15 @@ struct StatePacket {
     double   x_dot;           // carriage velocity in m/s; exponential moving-average filtered
     double   theta;           // pendulum angle in radians; zero = hanging straight down after homing
     double   theta_dot;       // pendulum angular velocity in rad/s; exponential moving-average filtered
-    uint8_t  episode_status;  // 0 = episode running normally; 1 = proximity limit sensor triggered; 2 = |theta_dot| exceeded 14 rad/s safety threshold
+    uint8_t  episode_status;  // 0 = episode running normally; 1 = proximity limit sensor triggered; 2 = |theta_dot| exceeded 14 rad/s safety threshold; 3 = homing initiated by client request_home (published once before homing begins)
 };
 
 // ── MotorCommand ──────────────────────────────────────────────────────────────
 // Command message pushed from the RL client to the LLI each control tick.
-// C sizeof = 8 bytes: 4(i32) + 1(u8) + 3(pad to align to 4).
-// Python mirror in hardware/rl/protocol.py uses format string '<iB3x'.
+// C sizeof = 8 bytes: 4(i32) + 1(u8) + 1(u8) + 2(pad to align to 4).
+// Python mirror in hardware/rl/protocol.py uses format string '<iBB2x'.
 struct MotorCommand {
-    int32_t  duty;   // signed PWM duty cycle: +255 = full speed right, -255 = full speed left, 0 = coast (no drive)
-    uint8_t  estop;  // emergency stop flag: any non-zero value commands immediate motor halt regardless of duty
+    int32_t  duty;          // signed PWM duty cycle: +255 = full speed right, -255 = full speed left, 0 = coast
+    uint8_t  estop;         // emergency stop flag: any non-zero value commands immediate motor halt
+    uint8_t  request_home;  // non-zero: LLI should stop motor and run a homing cycle before the next episode
 };

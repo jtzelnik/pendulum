@@ -14,8 +14,16 @@ inline constexpr unsigned MOTOR_DUTY = 230;                  // normal-operation
 // ── Encoder / kinematics constants ──────────────────────────────────────────
 inline constexpr long long COUNTS_PER_REV   = 2400;                              // encoder pulses per full shaft revolution (4× quadrature)
 inline constexpr double    DT               = 0.02;                              // nominal loop period in seconds (50 Hz)
-inline constexpr double    ALPHA            = 0.3;                               // EMA filter weight for velocity: higher = more responsive, lower = smoother
 inline constexpr double    PI               = 3.14159265358979323846;            // pi to full double precision
+
+// 2nd-order Butterworth low-pass filter coefficients for velocity estimation.
+// Design: Fs = 50 Hz, Fc = 10 Hz, bilinear transform (K = tan(π·Fc/Fs) = 0.72654).
+// Difference equation: y[n] = B0·x[n] + B1·x[n-1] + B2·x[n-2] − A1·y[n-1] − A2·y[n-2]
+inline constexpr double    VEL_B0 =  0.20657;
+inline constexpr double    VEL_B1 =  0.41314;
+inline constexpr double    VEL_B2 =  0.20657;
+inline constexpr double    VEL_A1 = -0.36953;
+inline constexpr double    VEL_A2 =  0.19582;
 inline constexpr double    METERS_PER_COUNT = (PI * 0.051) / COUNTS_PER_REV;   // linear distance per encoder count (pulley circumference / counts)
 inline constexpr double    RAD_PER_COUNT    = (2.0 * PI)   / COUNTS_PER_REV;   // angular distance per encoder count (full circle / counts)
 

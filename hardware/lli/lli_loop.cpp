@@ -2,6 +2,7 @@
 #include "homing.h"     // homing() — re-home after each episode terminal
 #include <zmq.h>        // ZeroMQ C API — context, sockets, send/recv
 #include <iostream>     // std::cout for startup messages
+#include <cstdio>       // std::printf for the live state display line
 #include <thread>       // std::this_thread::sleep_until
 #include <chrono>       // std::chrono::steady_clock, milliseconds
 #include <cmath>        // std::abs for angular velocity threshold check
@@ -32,9 +33,10 @@ void lli_loop(EncoderState& enc_carriage, EncoderState& enc_pendulum,
     zmq_setsockopt(pull, ZMQ_LINGER, &linger, sizeof(linger));        // discard unread command messages on close
 
     // ── Loop state ───────────────────────────────────────────────────────────
-    StateEstimator estimator;      // owns the EMA filter state across ticks
-    MotorCommand   cmd{0, 0};      // last received command; initialised to coast
-    int episode_count = 0;         // re-homes completed; full homing every 10 episodes
+    StateEstimator estimator;      // owns the Butterworth filter state across ticks
+    MotorCommand   cmd{0, 0, 0};   // last received command; initialised to coast
+    int      episode_count = 0;    // re-homes completed; full homing every 10 episodes
+    uint64_t tick_count    = 0;    // total ticks since loop start; used for periodic console print
 
     using clock = std::chrono::steady_clock;   // monotonic clock alias
     auto next_tick = clock::now();             // absolute time of the next scheduled tick
@@ -62,10 +64,17 @@ void lli_loop(EncoderState& enc_carriage, EncoderState& enc_pendulum,
         // ── Publish state (including terminal flag if set) ────────────────────
         zmq_send(pub, &pkt, sizeof(pkt), ZMQ_NOBLOCK);   // send packet; client sees episode_status before re-homing begins
 
+        // ── Periodic console state display (every 0.5 s = 25 ticks) ─────────
+        if (++tick_count % 25 == 0) {
+            std::printf("\r[lli]  x=%+6.3f m  x_dot=%+6.3f m/s  θ=%+6.3f rad  θ_dot=%+7.3f rad/s   ",
+                        pkt.x, pkt.x_dot, pkt.theta, pkt.theta_dot);
+            std::fflush(stdout);
+        }
+
         // ── Handle episode termination ────────────────────────────────────────
         if (pkt.episode_status != 0) {                                    // a terminal condition was detected this tick
             set_motor(0, 0);                                              // immediately stop motor
-            cmd = {0, 0};                                                 // reset stored command to coast so stale duty doesn't persist
+            cmd = {0, 0, 0};                                              // reset stored command to coast so stale duty doesn't persist
             ++episode_count;
             bool full = (episode_count % 10 == 0);                        // full homing every 10 episodes
             std::cout << "[lli] episode ended (status=" << (int)pkt.episode_status
@@ -74,6 +83,8 @@ void lli_loop(EncoderState& enc_carriage, EncoderState& enc_pendulum,
             bool ok = full ? homing(enc_carriage, enc_pendulum, done)
                            : homing_center_only(enc_carriage, enc_pendulum, done);
             if (!ok) break;                                               // exit loop if interrupted during homing
+            { MotorCommand tmp; while (zmq_recv(pull, &tmp, sizeof(tmp), ZMQ_NOBLOCK) > 0) {} }   // flush commands that arrived during homing
+            cmd = {0, 0, 0};
             estimator = StateEstimator{};                                 // reset filter state so velocities don't carry over from previous episode
             next_tick = clock::now();                                     // reset tick baseline so first post-home tick isn't overdue
             std::cout << "[lli] re-homed — resuming control\n";
@@ -85,6 +96,32 @@ void lli_loop(EncoderState& enc_carriage, EncoderState& enc_pendulum,
         while (zmq_recv(pull, &incoming, sizeof(incoming), ZMQ_NOBLOCK)   // non-blocking receive; returns -1 if queue empty
                == static_cast<int>(sizeof(incoming)))                     // only accept messages of exactly the expected size
             cmd = incoming;                                               // overwrite with each newer message; exits when queue empty
+
+        // ── PC-requested re-home ─────────────────────────────────────────────
+        if (cmd.request_home) {
+            set_motor(0, 0);
+            cmd = {0, 0, 0};
+            ++episode_count;
+            bool full = (episode_count % 10 == 0);
+            std::cout << "[lli] PC requested re-home (ep=" << episode_count
+                      << ") — " << (full ? "full homing" : "center re-home") << "\n";
+            // Publish handshake before homing begins so client can confirm
+            // initiation without relying on the 500 ms silence heuristic.
+            {
+                StatePacket ack = estimator.update(enc_carriage, enc_pendulum);
+                ack.episode_status = 3;   // HOMING_STARTED
+                zmq_send(pub, &ack, sizeof(ack), ZMQ_NOBLOCK);
+            }
+            bool ok = full ? homing(enc_carriage, enc_pendulum, done)
+                           : homing_center_only(enc_carriage, enc_pendulum, done);
+            if (!ok) break;
+            { MotorCommand tmp; while (zmq_recv(pull, &tmp, sizeof(tmp), ZMQ_NOBLOCK) > 0) {} }   // flush duplicate request_homes that arrived during homing
+            cmd = {0, 0, 0};
+            estimator = StateEstimator{};
+            next_tick = clock::now();
+            std::cout << "[lli] re-homed — resuming control\n";
+            continue;
+        }
 
         // ── Safety overrides ──────────────────────────────────────────────────
         if (cmd.estop                                                     // client requested emergency stop

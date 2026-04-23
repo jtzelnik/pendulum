@@ -27,8 +27,10 @@ reset(), which then blocks until homing is complete and packets resume.
 """
 
 import math              # sin, cos for observation construction
+import time              # monotonic clock for request_home retry timeout
 import numpy as np       # float32 array returned as observation
 from zmq_client import ZMQClient   # transport layer; recv_state / send_cmd
+from protocol import EPISODE_HOMING_STARTED   # status=3: LLI ack that homing is starting
 
 
 # ── PendulumEnv ───────────────────────────────────────────────────────────────
@@ -54,8 +56,9 @@ class PendulumEnv:
         self._max_steps     = max_steps      # 800 steps — maximum episode length (article §RL environment)
         self._limit_penalty = limit_penalty  # −400 — subtracted from reward when proximity sensor fires
         self._actions       = [-duty, 0, duty]  # action index → signed PWM duty; index 0=left, 1=coast, 2=right
-        self._step_count    = 0              # steps taken since the last reset; checked against max_steps
-        self._first_reset   = True           # lli_main.cpp homes before lli_loop starts; skip request_home on the very first call
+        self._step_count           = 0     # steps taken since the last reset; checked against max_steps
+        self._first_reset          = True  # lli_main.cpp homes before lli_loop starts; skip request_home on the very first call
+        self._last_terminal_status = 0     # episode_status of the last terminal step; 0=max-steps, 1/2=LLI auto-homed
 
     # ── private helpers ───────────────────────────────────────────────────────
 
@@ -93,61 +96,76 @@ class PendulumEnv:
     # ── public API ────────────────────────────────────────────────────────────
 
     def reset(self) -> np.ndarray:
-        """Request homing, wait for it to complete, and return the first observation.
+        """Wait for homing to complete (requesting it if needed) and return the first observation.
 
-        Three-phase protocol:
+        Three execution paths depending on why the previous episode ended:
 
-          Phase 0 — wait for the LLI to be publishing at all.  On the very first
-                    call, lli_main.cpp runs its full startup homing before starting
-                    lli_loop(), so the ZMQ sockets don't exist yet.  This phase
-                    blocks until at least one packet arrives, then flushes so Phase 1
-                    starts from a clean baseline.
+          Path A — First reset: lli_main.cpp completed startup homing before lli_loop
+                   started. Phase 0 confirms lli_loop is publishing, then Phase 2
+                   waits for status=0. No request_home is sent.
 
-          Phase 1 — resend request_home every 500 ms until the LLI goes silent.
-                    500 ms >> 20 ms tick, so silence reliably means homing started.
-                    Retrying handles any ZMQ HWM drops automatically.
+          Path B — Auto-home terminal (last status was 1 or 2): LLI stopped the motor
+                   and began homing automatically. Phase 0 blocks until homing finishes
+                   and the LLI resumes. Phase 2 then returns the first status=0 packet.
+                   No request_home is sent.
 
-          Phase 2 — block until the LLI resumes publishing status=0, indicating
-                    homing is complete and the new episode can start.
+          Path C — Max-steps terminal (last status was 0): LLI did not auto-home.
+                   Phase 0 confirms the LLI is live, then Phase 1 sends request_home
+                   and waits for the LLI's status=3 acknowledgement before homing
+                   begins. Phase 2 waits for status=0.
         """
         self._step_count = 0
         self._client.flush()
+
+        # Phase 0: confirm lli_loop is publishing (5-min ceiling for startup homing)
         print("  [reset] waiting for LLI ...", flush=True)
-
-        # Phase 0 — wait for the first packet so we know lli_loop is running.
-        if not self._client.poll(300_000):   # 5-minute ceiling covers worst-case startup homing
+        if not self._client.poll(300_000):
             raise RuntimeError("LLI not responding after 5 minutes — is the Pi running?")
-        self._client.flush()   # discard startup packets; begin Phase 1 from a clean queue
+        self._client.flush()   # discard stale packets before deciding homing path
 
-         # In reset(), between Phase 0 and Phase 1:
         if self._first_reset:
+            # Path A: startup homing already done — skip to Phase 2
             self._first_reset = False
-            # LLI just completed startup homing — skip Phase 1, go straight to Phase 2
+            print("  [reset] first reset — startup homing already complete", flush=True)
+
+        elif self._last_terminal_status != 0:
+            # Path B: LLI auto-homed; Phase 0 above may have already blocked until
+            # homing finished. Fall through to Phase 2 without sending request_home.
+            print(f"  [reset] auto-home path (last status={self._last_terminal_status})", flush=True)
+
         else:
-            # Phase 1 — trigger re-home between episodes
-            while True:
-                self._client.send_cmd(0, request_home=True)
-                if not self._client.poll(500):
-                    break
-                self._client.flush()
-            self._client.flush()
+            # Path C: max-steps terminal — LLI did not auto-home; request it explicitly.
+            print("  [reset] requesting home ...", flush=True)
+            self._request_home_and_wait_for_ack()
 
-        # Phase 1 — resend request_home until the LLI stops publishing for 500 ms.
-        print("  [reset] requesting home ...", flush=True)
-        while True:
-            self._client.send_cmd(0, request_home=True)
-            if not self._client.poll(500):   # 500 ms silence → homing has started
-                break
-            self._client.flush()             # drain packets that arrived; retry
-
-        self._client.flush()   # discard any packet that arrived at the poll boundary
-
-        # Phase 2 — wait for homing to finish and the first clean status=0 packet.
+        # Phase 2: wait for status=0 — homing complete and system ready for next episode
         print("  [reset] homing in progress ...", flush=True)
         while True:
             pkt = self._client.recv_state()
             if pkt.episode_status == 0:
                 return self._obs(pkt)
+
+    def _request_home_and_wait_for_ack(self) -> None:
+        """Send request_home until the LLI acknowledges with status=3, then return.
+
+        Retransmits every ~25 ms because ZMQ_PUSH HWM=1 can silently drop a command
+        if the LLI's queue is momentarily full. The LLI publishes exactly one status=3
+        packet immediately before beginning its homing sequence, giving an authoritative
+        handshake that replaces the previous 500 ms silence heuristic.
+
+        Also accepts status=0 as success in case a prior queued request_home was
+        processed and homing already completed before this call.
+        """
+        deadline = time.monotonic() + 30.0   # 30 s far exceeds any expected round-trip
+        while time.monotonic() < deadline:
+            self._client.send_cmd(0, request_home=True)
+            if self._client.poll(25):   # 25 ms > one 20 ms LLI tick; gives LLI time to react
+                pkt = self._client.recv_state()
+                if pkt.episode_status in (EPISODE_HOMING_STARTED, 0):
+                    self._client.flush()
+                    return
+                self._client.flush()
+        raise RuntimeError("LLI did not acknowledge request_home (status=3) within 30 s")
 
     def step(self, action: int):
         """Send one motor command and receive the resulting state.
@@ -169,6 +187,10 @@ class PendulumEnv:
             pkt.episode_status != 0                      # LLI flagged a limit hit (1) or angular-vel exceeded (2)
             or self._step_count >= self._max_steps - 1  # step budget exhausted (800 steps per article)
         )
+        if done:
+            # Record termination reason so reset() knows which homing path to take:
+            # non-zero means LLI auto-homed; 0 means max-steps and no auto-home.
+            self._last_terminal_status = int(pkt.episode_status)
         reward = self._reward(                           # compute scalar reward for this (s, a, s') transition
             pkt,
             pkt.episode_status if done else 0            # only apply limit_penalty on the actual terminal step

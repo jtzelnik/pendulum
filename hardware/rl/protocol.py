@@ -16,6 +16,12 @@ immediately rather than silently corrupting data at runtime.
 import struct           # standard-library binary packing/unpacking
 from typing import NamedTuple   # lightweight immutable record type for the decoded packet
 
+# Episode status codes — must match uint8_t values in common/protocol.h
+EPISODE_RUNNING        = 0   # normal tick
+EPISODE_LIMIT_HIT      = 1   # proximity sensor triggered; LLI auto-homes
+EPISODE_ANGVEL_EXCEED  = 2   # |theta_dot| > 14 rad/s; LLI auto-homes
+EPISODE_HOMING_STARTED = 3   # LLI acknowledged request_home; homing beginning now
+
 # ── StatePacket wire format ───────────────────────────────────────────────────
 # '<' = little-endian, standard sizes (no platform-dependent alignment).
 # q  = int64  (8 bytes) — timestamp_us
@@ -51,7 +57,7 @@ class StatePacket(NamedTuple):
     x_dot:          float  # carriage velocity in m/s (EMA filtered)
     theta:          float  # pendulum angle in radians (0 = hanging down)
     theta_dot:      float  # pendulum angular velocity in rad/s (EMA filtered)
-    episode_status: int    # 0=running  1=limit hit  2=angular-velocity exceeded
+    episode_status: int    # 0=running  1=limit hit  2=angular-velocity exceeded  3=homing started (request_home ack)
 
 
 # ── Decode helper ─────────────────────────────────────────────────────────────
