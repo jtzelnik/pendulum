@@ -115,7 +115,16 @@ void lli_loop(EncoderState& enc_carriage, EncoderState& enc_pendulum,
             bool ok = full ? homing(enc_carriage, enc_pendulum, done)
                            : homing_center_only(enc_carriage, enc_pendulum, done);
             if (!ok) break;
-            { MotorCommand tmp; while (zmq_recv(pull, &tmp, sizeof(tmp), ZMQ_NOBLOCK) > 0) {} }   // flush duplicate request_homes that arrived during homing
+            // The ZMQ pipeline has two-message capacity: one in the PULL receive
+            // buffer (RCVHWM=1) and one in the client's PUSH send buffer (SNDHWM=1).
+            // The first flush drains the PULL buffer, which opens capacity so the
+            // message held in the client's PUSH buffer is immediately delivered.
+            // The 50 ms sleep lets that delivery complete, then the second flush
+            // removes it — preventing a stale request_home from triggering a second
+            // homing on the very next tick.
+            { MotorCommand tmp; while (zmq_recv(pull, &tmp, sizeof(tmp), ZMQ_NOBLOCK) > 0) {} }
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            { MotorCommand tmp; while (zmq_recv(pull, &tmp, sizeof(tmp), ZMQ_NOBLOCK) > 0) {} }
             cmd = {0, 0, 0};
             estimator = StateEstimator{};
             next_tick = clock::now();
