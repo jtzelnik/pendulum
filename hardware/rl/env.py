@@ -146,30 +146,42 @@ class PendulumEnv:
                 return self._obs(pkt)
 
     def _request_home_and_wait_for_ack(self) -> None:
-        """Send request_home until the LLI acknowledges with status=3, then return.
+        """Send request_home until homing is confirmed running, then stop and return.
 
-        The LLI publishes two packets in the tick it processes request_home: the
-        normal status=0 (line 65 of lli_loop.cpp) and then status=3 (homing ack).
-        Both land in the SUB buffer together. We read them one at a time — without
-        flushing between — so we never discard a status=3 that follows a status=0.
+        Two exit conditions — whichever comes first:
+          • status=3 received: LLI explicitly acknowledged the request.
+          • 200 ms silence: LLI has gone quiet, meaning homing is blocking its loop.
 
-        Retransmits every 100 ms. Using a shorter interval caused a stale
-        request_home to land in the LLI queue after its post-homing flush, because
-        the last send in the old loop happened in the same iteration as the final
-        status=0 receive, which arrives right after the LLI flush completes.
+        The silence path caps sends at 2 (t=0 and t=100 ms). The LLI's double
+        flush after homing (50 ms sleep between flushes) clears both. Retransmitting
+        beyond 200 ms of silence would put a new request_home into the freshly
+        flushed queue and trigger a second homing.
         """
         deadline = time.monotonic() + 30.0
-        last_send = time.monotonic() - 1.0   # force immediate first send
+        last_send    = time.monotonic() - 1.0   # force immediate first send
+        last_packet_t = time.monotonic()
+
         while time.monotonic() < deadline:
-            if time.monotonic() - last_send >= 0.1:
+            now = time.monotonic()
+
+            if now - last_packet_t > 0.2:
+                # 200 ms with no packets — homing is definitely running.
+                # Stop sending; Phase 2 will block until homing finishes.
+                self._client.flush()
+                return
+
+            if now - last_send >= 0.1:
                 self._client.send_cmd(0, request_home=True)
-                last_send = time.monotonic()
-            if self._client.poll(20):        # read ONE packet; do not flush
+                last_send = now
+
+            if self._client.poll(20):
+                last_packet_t = time.monotonic()
                 pkt = self._client.recv_state()
                 if pkt.episode_status == EPISODE_HOMING_STARTED:
                     self._client.flush()
                     return
-        raise RuntimeError("LLI did not acknowledge request_home (status=3) within 30 s")
+
+        raise RuntimeError("LLI did not acknowledge request_home within 30 s")
 
     def step(self, action: int):
         """Send one motor command and receive the resulting state.
