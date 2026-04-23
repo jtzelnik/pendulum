@@ -1,20 +1,45 @@
 """
 DQN agent: experience-replay buffer, ε-greedy policy, and the Bellman update.
 
-All techniques are taken directly from the article's appendix S2 and Table 2:
+Key ideas explained for beginners:
 
-  Replay buffer       — 50 000 transitions; breaks temporal correlation between
-                        consecutive samples that would bias gradient estimates.
-  Fixed Q-targets     — a second 'target' network provides stable Bellman
-                        bootstrap values; synced from the policy net every
-                        C = 1000 environment steps (called from train.py).
-  Huber loss          — equivalent to clipping the TD-error gradient to [−1, 1],
-                        preventing large errors from destabilising early training.
-  ε-greedy            — fixed ε = 0.178 throughout training (no decay for DQN;
-                        contrast with the decaying schedule used for Q-learning).
-  Adam optimiser      — PyTorch defaults (β₁=0.9, β₂=0.999, ε=1e-8).
-  Train frequency     — one gradient step per environment step, applied in a
-                        batch at the end of each episode (train.py drives this).
+  Replay buffer       — Stores the last 50 000 (state, action, reward,
+                        next_state, done) tuples.  Training samples a random
+                        mini-batch from this buffer rather than using the most
+                        recent transitions in order.  This matters because
+                        consecutive environment steps are highly correlated
+                        (each step follows naturally from the last), and
+                        training on correlated data causes the network to
+                        overfit to the current situation and forget the rest.
+                        Random sampling mixes old and recent experience so the
+                        gradient estimate covers the whole state space.
+
+  Fixed Q-targets     — Two identical networks are kept: the 'policy net'
+                        (updated every gradient step) and the 'target net'
+                        (frozen and only copied from the policy net every 1000
+                        env steps).  The Bellman target is computed from the
+                        frozen target net.  Without this, the prediction and
+                        the target would both change every step — like trying
+                        to hit a bullseye that moves every time you shoot.
+
+  Huber loss          — Similar to mean-squared error (MSE) for small errors
+                        but switches to mean-absolute error (MAE) for large
+                        ones.  This clips the gradient magnitude so that a
+                        single very wrong prediction at the start of training
+                        cannot send the network weights flying off to infinity.
+
+  ε-greedy            — With probability ε (0.178) the agent picks a random
+                        action instead of the best one.  This forces the agent
+                        to visit states it would not choose on its own, which
+                        is necessary for learning — if you only do what you
+                        already think is best, you never discover better paths.
+
+  Adam optimiser      — Adaptive gradient descent: automatically adjusts the
+                        learning rate for each weight based on past gradient
+                        magnitudes (β₁=0.9, β₂=0.999).
+
+  Train frequency     — One gradient step is run per environment step, but
+                        batched at the end of each episode (train.py drives this).
 """
 
 import random                           # uniform random sampling for ε-greedy and buffer
@@ -135,8 +160,13 @@ class DQNAgent:
         """Choose an action using ε-greedy policy.
 
         During training (greedy=False): with probability ε pick a uniformly
-        random action; otherwise pick the action with the highest Q-value.
-        During evaluation (greedy=True): always pick the best action.
+        random action; otherwise ask the network for the best action.
+        Random exploration is essential early in training — if the agent only
+        does what it currently thinks is best, it never visits unfamiliar states
+        and the Q-values for those states never improve.
+
+        During evaluation (greedy=True): always pick the highest-Q action so
+        the reported return is a clean measure of policy quality.
 
         Args:
             obs:    Current observation as a float32 numpy array (shape (5,)).
@@ -144,19 +174,41 @@ class DQNAgent:
         Returns:
             Integer action index in {0, 1, 2}.
         """
-        if not greedy and random.random() < self.epsilon:           # ε-greedy: explore with probability ε
-            return random.randrange(self.N_ACTIONS)                 # uniform random action to encourage state-space coverage
-        state = torch.tensor(obs, dtype=torch.float32,              # wrap numpy obs in a tensor
-                             device=self.device).unsqueeze(0)       # add batch dimension: (5,) → (1, 5)
-        with torch.no_grad():                                        # no gradient needed for inference
-            return int(self.policy_net(state).argmax(dim=1).item()) # forward pass → Q-values → argmax over actions → Python int
+        if not greedy and random.random() < self.epsilon:           # explore: probability ε → random action
+            return random.randrange(self.N_ACTIONS)                 # uniform random: all three actions equally likely
+        state = torch.tensor(obs, dtype=torch.float32,              # convert numpy array to a PyTorch tensor
+                             device=self.device).unsqueeze(0)       # add batch dimension: shape (5,) → (1, 5)
+        with torch.no_grad():                                        # disable gradient tracking — we're only reading Q-values
+            return int(self.policy_net(state).argmax(dim=1).item()) # forward pass → Q-values for all 3 actions → pick the largest
 
     def train_step(self) -> float:
         """Sample one mini-batch from the buffer and perform one gradient update.
 
-        Implements the DQN Bellman update (appendix eq. 2):
-            target = r + γ · max_{a'} Q(s', a'; w⁻)  · (1 − done)
+        What we are trying to teach the network:
+            For every (state, action, reward, next_state) tuple in the batch,
+            the network's Q-value for (state, action) should satisfy:
+
+                Q(s, a) = reward + γ · best_Q(next_state)
+
+            This is the Bellman equation.  It says: 'the value of being in
+            state s and taking action a equals the immediate reward PLUS the
+            discounted value of the best option in the next state.'  The
+            network is trained to satisfy this equation simultaneously for all
+            sampled transitions.  If Q(s,a) is too large or too small, the
+            gradient of the Huber loss pushes it toward the Bellman target.
+
+        Why the target net (w⁻) instead of the policy net (w) for the target?
+            If we computed the Bellman target with the same network we are
+            training, both sides of the equation would move on every gradient
+            step — the network would chasing its own tail and diverge.
+            The target net is frozen between syncs (every 1000 env steps),
+            giving the policy net a stable goal to fit toward.
+
+        Bellman update (canonical form):
+            target = r + γ · max_{a'} Q(s', a'; w⁻) · (1 − done)
             loss   = HuberLoss(Q(s, a; w), target)
+            The (1 − done) term zeros out the future term on terminal steps
+            because there is no next state to bootstrap from.
 
         Returns 0.0 without updating if the buffer has fewer entries than
         batch_size — training only starts once the buffer is sufficiently full.
@@ -202,31 +254,42 @@ class DQNAgent:
         """
         self.target_net.load_state_dict(self.policy_net.state_dict())   # overwrite all target-net parameters with current policy-net values
 
-    def save(self, path: str) -> None:
-        """Persist network weights and optimiser state to a .pt checkpoint file.
+    def save(self, path: str, **extras) -> None:
+        """Persist network weights, optimiser state, and any extra scalars.
 
-        Both networks and the optimiser are saved so training can be resumed
-        exactly from this point, including Adam's moment estimates.
+        Callers can pass keyword arguments (e.g. total_steps=50000, episode=200)
+        that are stored alongside the network weights so training can resume from
+        exactly the same point.
 
         Args:
-            path: Filesystem path for the checkpoint, e.g. 'checkpoints/best.pt'.
+            path:    Filesystem path for the checkpoint, e.g. 'checkpoints/best.pt'.
+            **extras: Arbitrary scalar values to embed in the checkpoint dict.
         """
-        torch.save({                                              # save a dict so keys are explicit and forward-compatible
-            "policy_net": self.policy_net.state_dict(),          # trained network weights
-            "target_net": self.target_net.state_dict(),          # frozen target weights
-            "optimizer":  self.optimizer.state_dict(),           # Adam moment estimates and step count
-        }, path)                                                  # write to disk
+        torch.save({
+            "policy_net": self.policy_net.state_dict(),   # trained network weights
+            "target_net": self.target_net.state_dict(),   # frozen target weights
+            "optimizer":  self.optimizer.state_dict(),    # Adam moment estimates and step count
+            **extras,                                     # e.g. total_steps, episode
+        }, path)
 
-    def load(self, path: str) -> None:
+    def load(self, path: str) -> dict:
         """Restore network weights and optimiser state from a checkpoint file.
 
-        map_location ensures a GPU-saved checkpoint can be loaded on CPU and
-        vice versa without manual device re-mapping.
+        Returns a dict of any extra values that were saved alongside the
+        networks (e.g. {"total_steps": 50000, "episode": 200}).  Old
+        checkpoints without extras return an empty dict.
+
+        map_location ensures a GPU-saved checkpoint loads correctly on CPU
+        and vice versa.
 
         Args:
             path: Path to the .pt checkpoint file written by save().
+        Returns:
+            Dict of non-network keys stored in the checkpoint.
         """
-        ckpt = torch.load(path, map_location=self.device)           # load checkpoint; remap tensors to self.device
-        self.policy_net.load_state_dict(ckpt["policy_net"])          # restore trained weights
-        self.target_net.load_state_dict(ckpt["target_net"])          # restore target weights
-        self.optimizer.load_state_dict(ckpt["optimizer"])            # restore Adam state so training continues smoothly
+        ckpt = torch.load(path, map_location=self.device)
+        self.policy_net.load_state_dict(ckpt["policy_net"])   # restore trained weights
+        self.target_net.load_state_dict(ckpt["target_net"])   # restore target weights
+        self.optimizer.load_state_dict(ckpt["optimizer"])     # restore Adam state so training continues smoothly
+        return {k: v for k, v in ckpt.items()
+                if k not in ("policy_net", "target_net", "optimizer")}   # return training-loop scalars to caller

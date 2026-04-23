@@ -1,64 +1,114 @@
-#pragma once                   // guard against multiple inclusion in the same translation unit
-#include <pigpio.h>            // pigpio GPIO, PWM, and alert API
-#include <atomic>              // std::atomic for thread-safe shared variables
-#include <cstdint>             // fixed-width integer types (int8_t etc.)
+#pragma once                   // tells the compiler to include this file only once, even if #included from multiple places
+#include <pigpio.h>            // pigpio library: provides GPIO control, PWM, and interrupt callbacks on the Raspberry Pi
+#include <atomic>              // std::atomic: allows variables to be safely read/written from multiple threads without locks
+#include <cstdint>             // fixed-width integer types: int8_t (8-bit signed), int64_t (64-bit signed), etc.
 
 // ── Pin assignments ──────────────────────────────────────────────────────────
-inline constexpr unsigned ENC1_A     = 17, ENC1_B    = 27;  // encoder 1 quadrature lines (carriage)
-inline constexpr unsigned ENC2_A     = 22, ENC2_B    = 26;  // encoder 2 quadrature lines (pendulum)
-inline constexpr unsigned PROX_NEAR  = 21, PROX_FAR  = 20;  // proximity sensors: near-stop and far-stop
-inline constexpr unsigned BTN_RIGHT  = 5,  BTN_LEFT  = 6;   // manual-drive pushbuttons (active-low)
-inline constexpr unsigned MOTOR_R    = 12, MOTOR_L   = 13;  // IBT2 R_PWM and L_PWM inputs
-inline constexpr unsigned MOTOR_DUTY = 230;                  // normal-operation PWM duty (0-255 scale)
+// These are BCM (Broadcom chip) GPIO numbers — NOT the physical pin numbers
+// printed on the Pi header. They match the wiring described in CLAUDE.md.
+inline constexpr unsigned ENC1_A     = 17, ENC1_B    = 27;  // carriage encoder: quadrature channel A and B
+inline constexpr unsigned ENC2_A     = 22, ENC2_B    = 26;  // pendulum encoder: quadrature channel A and B
+inline constexpr unsigned PROX_NEAR  = 21, PROX_FAR  = 20;  // proximity (limit) sensors: near stop and far stop
+inline constexpr unsigned BTN_RIGHT  = 5,  BTN_LEFT  = 6;   // manual-drive pushbuttons (active-low: reads 0 when pressed)
+inline constexpr unsigned MOTOR_R    = 12, MOTOR_L   = 13;  // IBT2 motor driver PWM inputs: R_PWM and L_PWM
+
+// PWM duty cycle used for normal RL-driven motor commands.
+// Range is 0–255 (pigpio software PWM scale). 230 ≈ 90% power — aggressive
+// enough for snappy movement while leaving a small margin below the driver's limit.
+inline constexpr unsigned MOTOR_DUTY = 230;
 
 // ── Encoder / kinematics constants ──────────────────────────────────────────
-inline constexpr long long COUNTS_PER_REV   = 2400;                              // encoder pulses per full shaft revolution (4× quadrature)
-inline constexpr double    DT               = 0.02;                              // nominal loop period in seconds (50 Hz)
-inline constexpr double    PI               = 3.14159265358979323846;            // pi to full double precision
+// The encoders (E38S6-600-24G) have 600 lines per revolution. Quadrature
+// decoding watches both rising and falling edges on both A and B channels,
+// producing 4 × 600 = 2400 unique positions per shaft revolution.
+inline constexpr long long COUNTS_PER_REV = 2400;
 
-// 2nd-order Butterworth low-pass filter coefficients for velocity estimation.
-// Design: Fs = 50 Hz, Fc = 20 Hz, bilinear transform (K = tan(π·Fc/Fs) = 3.07768).
-// Fc=20 Hz is 80% of Nyquist — minimal lag, maximum responsiveness.
-// Note: A1 is positive because Fc > Fs/4 (12.5 Hz); the filter is still stable
-// (pole magnitude = sqrt(A2) = 0.642 < 1).
-// Difference equation: y[n] = B0·x[n] + B1·x[n-1] + B2·x[n-2] − A1·y[n-1] − A2·y[n-2]
-inline constexpr double    VEL_B0 =  0.63888;
-inline constexpr double    VEL_B1 =  1.27776;
-inline constexpr double    VEL_B2 =  0.63888;
-inline constexpr double    VEL_A1 =  1.14282;
-inline constexpr double    VEL_A2 =  0.41259;
-inline constexpr double    METERS_PER_COUNT = (PI * 0.051) / COUNTS_PER_REV;   // linear distance per encoder count (pulley circumference / counts)
-inline constexpr double    RAD_PER_COUNT    = (2.0 * PI)   / COUNTS_PER_REV;   // angular distance per encoder count (full circle / counts)
+// Nominal loop period: the control loop targets 50 Hz (one tick every 20 ms).
+// The actual elapsed time is measured each tick for accurate velocity estimation.
+inline constexpr double DT = 0.02;   // seconds
+
+inline constexpr double PI = 3.14159265358979323846;
+
+// METERS_PER_COUNT converts one encoder count into metres of carriage travel.
+// The carriage belt wraps around a pulley of diameter 51 mm (circumference = π × 0.051 m).
+// One full shaft revolution moves the belt exactly that far, and spans 2400 counts.
+inline constexpr double METERS_PER_COUNT = (PI * 0.051) / COUNTS_PER_REV;
+
+// RAD_PER_COUNT converts one encoder count into radians of pendulum rotation.
+// The pendulum encoder sits directly on the pivot shaft (1:1 gear ratio),
+// so 2400 counts = one full rotation = 2π radians.
+inline constexpr double RAD_PER_COUNT = (2.0 * PI) / COUNTS_PER_REV;
+
+// ── Butterworth velocity-filter coefficients ─────────────────────────────────
+// Velocity is estimated each tick by finite difference: (position change) / (time elapsed).
+// Because the encoder has discrete counts, small movements produce noisy spikes
+// (e.g., 0 counts one tick then 2 counts the next). A low-pass filter smooths
+// these out while keeping the estimate responsive to real motion.
+//
+// Filter design: 2nd-order Butterworth, Fc = 20 Hz, Fs = 50 Hz.
+//   - Butterworth: maximally flat response in the passband (no ripple below 20 Hz).
+//   - Fc = 20 Hz: passes frequencies up to 20 Hz unattenuated; attenuates above.
+//     This is 80 % of Nyquist (25 Hz) — very responsive, minimal phase lag.
+//   - Designed via bilinear transform: K = tan(π × Fc / Fs) = tan(72°) = 3.07768.
+//
+// The filter is a "biquad" — a two-pole IIR section — with difference equation:
+//   y[n] = B0·x[n] + B1·x[n-1] + B2·x[n-2] − A1·y[n-1] − A2·y[n-2]
+// where x[n] is raw velocity this tick and y[n] is the filtered output.
+// B0/B1/B2 weight current and past inputs; A1/A2 feed past outputs back in.
+//
+// Note: A1 is positive here because Fc (20 Hz) > Fs/4 (12.5 Hz). This is
+// mathematically correct — the filter is still stable because the pole
+// magnitude √A2 = 0.642 is less than 1 (the stability requirement for IIR filters).
+inline constexpr double VEL_B0 =  0.63888;
+inline constexpr double VEL_B1 =  1.27776;
+inline constexpr double VEL_B2 =  0.63888;
+inline constexpr double VEL_A1 =  1.14282;
+inline constexpr double VEL_A2 =  0.41259;
 
 // ── Quadrature decode table ──────────────────────────────────────────────────
-// Indexed by (prev_state << 2) | curr_state where state = (A << 1) | B.
-// Returns +1, -1, or 0 for valid forward, reverse, or no-change transitions.
-// Illegal two-bit flips (diagonal entries) are filtered before this lookup.
+// A quadrature encoder outputs two square-wave signals (A and B) that are
+// 90° out of phase with each other. As the shaft turns:
+//   • Forward: states cycle 00 → 01 → 11 → 10 → 00 → ...
+//   • Reverse: states cycle 00 → 10 → 11 → 01 → 00 → ...
+//
+// We track the combined 2-bit state (A << 1 | B) and look up the direction
+// each time it changes. This gives 4× the resolution of counting one channel alone.
+//
+// QUAD_TABLE is indexed by (prev_state << 2) | curr_state (a 4-bit value).
+// Returns +1 (forward), -1 (reverse), or 0 (no change / illegal transition).
+// Illegal transitions (both bits flipping simultaneously) are pre-filtered in
+// the callback and never reach this table.
 inline constexpr int8_t QUAD_TABLE[16] = {
-     0, -1, +1,  0,   // prev=00: no-move, B-fall (reverse), A-rise (forward), illegal
-    +1,  0,  0, -1,   // prev=01: A-rise (forward), no-move, illegal, B-rise (reverse)
-    -1,  0,  0, +1,   // prev=10: B-fall (reverse), illegal, no-move, A-fall (forward)
-     0, +1, -1,  0    // prev=11: illegal, A-fall (forward), B-rise (reverse), no-move
+     0, -1, +1,  0,   // prev=00: no-move | B falls→reverse | A rises→forward | illegal
+    +1,  0,  0, -1,   // prev=01: A rises→forward | no-move | illegal | B rises→reverse
+    -1,  0,  0, +1,   // prev=10: B falls→reverse | illegal | no-move | A falls→forward
+     0, +1, -1,  0    // prev=11: illegal | A falls→forward | B rises→reverse | no-move
 };
 
 // ── Encoder state ────────────────────────────────────────────────────────────
-// Holds the mutable state for one quadrature encoder.
-// Shared between the main loop (reads count) and the pigpio alert callback (writes count).
+// Holds everything needed to track one quadrature encoder.
+// Two threads touch this struct:
+//   1. The pigpio alert thread — writes count, a, b, prev via the encoder callback.
+//   2. The main/control thread — reads count to compute position and velocity.
+// count is declared atomic so the main thread always sees a complete 64-bit
+// value and never catches it half-updated (a real risk on 32-bit ARM).
 struct EncoderState {
-    std::atomic<long long> count{0};   // cumulative signed tick count, updated by interrupt callback
-    int a{0}, b{0}, prev{0};           // last sampled A level, B level, and combined 2-bit state
-    unsigned pin_a, pin_b;             // GPIO pin numbers for this encoder's A and B channels
+    std::atomic<long long> count{0};   // cumulative signed tick count; positive = right/forward
+    int a{0}, b{0}, prev{0};           // most recent A level, B level, and combined 2-bit previous state
+    unsigned pin_a, pin_b;             // BCM GPIO numbers for this encoder's A and B channels
 
-    // Stores pin assignments; count and state initialised to zero/idle.
-    EncoderState(unsigned pa, unsigned pb)
-        : pin_a(pa), pin_b(pb) {}
+    // Constructor just stores the pin numbers; count and state start at zero.
+    // The main program snapshots the actual pin levels before enabling callbacks
+    // so the first decoded edge starts from a known-correct state.
+    EncoderState(unsigned pa, unsigned pb) : pin_a(pa), pin_b(pb) {}
 };
 
 // ── Motor drive ──────────────────────────────────────────────────────────────
-// Applies independent PWM duty cycles to the two IBT2 input channels.
-// duty_r drives MOTOR_R (R_PWM); duty_l drives MOTOR_L (L_PWM). Range 0-255.
-// Only one channel should be non-zero at a time to avoid shoot-through.
+// The IBT2 driver has two independent PWM inputs: R_PWM spins the motor one
+// way, L_PWM spins it the other. Setting both non-zero at once causes the
+// driver to fight itself (shoot-through), so only one should be non-zero.
+// Duty range is 0 (stopped) to 255 (full speed) for pigpio software PWM.
 inline void set_motor(unsigned duty_r, unsigned duty_l) {
-    gpioPWM(MOTOR_R, duty_r);   // set software PWM duty on R_PWM pin
-    gpioPWM(MOTOR_L, duty_l);   // set software PWM duty on L_PWM pin
+    gpioPWM(MOTOR_R, duty_r);   // apply R_PWM duty to the right-drive pin
+    gpioPWM(MOTOR_L, duty_l);   // apply L_PWM duty to the left-drive pin
 }

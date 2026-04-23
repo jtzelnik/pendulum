@@ -1,237 +1,287 @@
 """
-Environment wrapper around the live ZMQ connection to the LLI.
+Gymnasium-style environment wrapper around the live ZeroMQ connection to the LLI.
 
-Observation vector (5-D, article eq. 4):
+This class bridges the RL training loop and the physical hardware. It translates
+between the three-action discrete command space (left / coast / right) and the
+raw signed PWM duties the LLI expects, and handles all the episode lifecycle
+logic: detecting terminals, requesting homing, and waiting for the system to
+be ready before each new episode.
+
+Observation vector (5-D):
     [sin θ,  cos θ,  θ_dot,  x,  x_dot]
-sin/cos are used instead of raw θ to avoid the angle discontinuity at ±π
-that would look like a very large state jump to the network.
+
+Why sin/cos instead of raw θ?
+    θ is an angle, so it wraps around at ±π. If the pendulum passes through
+    the upright position, θ might jump from +3.14 to -3.14 in one step. To
+    the neural network that looks like an enormous state change, even though
+    the physical change was tiny. Using (sin θ, cos θ) gives a smooth,
+    unique representation for every angle without any discontinuity.
 
 Actions (3 discrete integers):
-    0 → left   duty = −DUTY
-    1 → coast  duty =  0
-    2 → right  duty = +DUTY
+    0 → duty = −DUTY  (drive left)
+    1 → duty =  0     (coast — motor off)
+    2 → duty = +DUTY  (drive right)
 
-Reward (article eq. 11):
+Reward (per step):
     r = (1/2)(1 − cos θ) − (x / x_max)²
-    Maximum = 1 when θ = π (upright) and x = 0 (centred).
-    An additional limit_penalty (−400) is applied on the terminal step
-    when the proximity sensor was triggered (episode_status == 1), giving
-    a minimum normalised-return of −400/800 = −0.5 as stated in the article.
+    Range: 0 (hanging down, centred) to 1 (perfectly upright and centred).
+    An additional limit_penalty (−400) is applied on the terminal step when
+    the proximity sensor fires, discouraging the agent from driving into stops.
 
-Episode termination (either condition ends the episode):
-    • episode_status != 0 — LLI detected a limit hit or |θ_dot| > 14 rad/s
-    • step_count >= max_steps — maximum episode length reached
-For status != 0 terminals the LLI re-homes automatically. For max_steps
-(status=0) terminals the caller must send request_home before calling
-reset(), which then blocks until homing is complete and packets resume.
+Episode termination:
+    • episode_status != 0 — LLI detected a limit hit (1) or |θ_dot| > 14 rad/s (2).
+      The LLI auto-homes in both cases, so reset() does not send request_home.
+    • step_count >= max_steps — episode length cap reached (800 steps = 16 s).
+      The LLI does NOT auto-home in this case, so reset() sends request_home.
 """
 
-import math              # sin, cos for observation construction
+import math              # sin, cos for observation construction; used to encode angle without discontinuity
 import time              # monotonic clock for request_home retry timeout
-import numpy as np       # float32 array returned as observation
-from zmq_client import ZMQClient   # transport layer; recv_state / send_cmd
-from protocol import EPISODE_HOMING_STARTED   # status=3: LLI ack that homing is starting
+import numpy as np       # float32 array returned as observation (matches PyTorch default dtype)
+from zmq_client import ZMQClient   # transport layer: recv_state() and send_cmd()
+from protocol import (EPISODE_HOMING_STARTED,   # status code 3: LLI confirmed it received request_home
+                      EPISODE_LIMIT_HIT,        # status code 1: carriage hit a rail stop; LLI auto-homes
+                      EPISODE_ANGVEL_EXCEED)     # status code 2: |theta_dot| > 14 rad/s; LLI auto-homes
 
 
-# ── PendulumEnv ───────────────────────────────────────────────────────────────
 class PendulumEnv:
-    """Real-hardware RL environment: one env step = one LLI control tick (20 ms)."""
+    """Real-hardware RL environment. One env step = one 50 Hz LLI control tick (20 ms)."""
 
-    N_ACTIONS = 3   # left / coast / right — matches the three motor commands in the article
-    OBS_DIM   = 5   # [sin θ, cos θ, θ_dot, x, x_dot] — matches the ANN input layer size
+    N_ACTIONS = 3   # number of discrete actions: left, coast, right
+    OBS_DIM   = 5   # observation dimension: [sin θ, cos θ, θ_dot, x, x_dot]
 
     def __init__(self, client: ZMQClient, duty: int, x_max: float,
                  max_steps: int, limit_penalty: float) -> None:
-        """Initialise the environment with hardware and episode parameters.
+        """Set up the environment with the open ZMQ connection and episode parameters.
 
         Args:
-            client:        Open ZMQClient connected to the Pi.
-            duty:          PWM duty magnitude for left/right actions (0–255).
-            x_max:         Track half-length in metres; used in reward denominator.
-            max_steps:     Maximum steps per episode before forced termination.
-            limit_penalty: Reward penalty added on a limit-sensor terminal step.
+            client:        Open ZMQClient already connected to the Pi.
+            duty:          PWM magnitude for left/right actions (0–255). Larger = faster.
+            x_max:         Track half-length in metres (e.g. 0.35). Used in reward denominator.
+            max_steps:     Maximum steps before the episode is force-terminated (e.g. 800).
+            limit_penalty: Extra negative reward added when the carriage hits a limit (e.g. −400).
         """
-        self._client        = client         # ZMQ transport; send_cmd / recv_state
-        self._x_max         = x_max          # 0.35 m — track half-length used in reward and boundary check
-        self._max_steps     = max_steps      # 800 steps — maximum episode length (article §RL environment)
-        self._limit_penalty = limit_penalty  # −400 — subtracted from reward when proximity sensor fires
-        self._actions       = [-duty, 0, duty]  # action index → signed PWM duty; index 0=left, 1=coast, 2=right
-        self._step_count           = 0     # steps taken since the last reset; checked against max_steps
-        self._first_reset          = True  # lli_main.cpp homes before lli_loop starts; skip request_home on the very first call
-        self._last_terminal_status = 0     # episode_status of the last terminal step; 0=max-steps, 1/2=LLI auto-homed
+        self._client        = client
+        self._x_max         = x_max
+        self._max_steps     = max_steps
+        self._limit_penalty = limit_penalty
+        # Map action indices to signed duty values: 0=left, 1=coast, 2=right.
+        self._actions       = [-duty, 0, duty]
+        self._step_count           = 0     # steps taken in the current episode
+        self._first_reset          = True  # True until the first reset() call; skips request_home because the LLI already homed at startup
+        self._last_terminal_status = 0     # episode_status from the last terminal step (0 = max-steps, 1/2 = auto-homed)
 
-    # ── private helpers ───────────────────────────────────────────────────────
+    # ── Private helpers ───────────────────────────────────────────────────────
 
     def _obs(self, pkt) -> np.ndarray:
-        """Convert a StatePacket into the 5-D observation vector fed to the DQN.
+        """Convert a StatePacket into the 5-D observation vector.
 
-        Using sin/cos instead of θ directly avoids the −π/+π wraparound
-        discontinuity, which would otherwise look like a huge state jump.
+        Returns a float32 array because that is PyTorch's default tensor dtype,
+        avoiding an implicit conversion every time the observation is passed to
+        the neural network.
         """
-        return np.array([           # build a contiguous float32 array for PyTorch
-            math.sin(pkt.theta),    # sin θ — encodes angle without wraparound discontinuity
-            math.cos(pkt.theta),    # cos θ — together with sin gives unique representation for all angles
-            pkt.theta_dot,          # angular velocity in rad/s — already Butterworth-filtered by LLI
+        return np.array([
+            math.sin(pkt.theta),    # sin θ — smooth angle encoding, no ±π discontinuity
+            math.cos(pkt.theta),    # cos θ — together with sin gives a unique representation for all angles
+            pkt.theta_dot,          # angular velocity in rad/s (Butterworth-filtered by LLI)
             pkt.x,                  # carriage position in metres (0 = centre)
-            pkt.x_dot,              # carriage velocity in m/s — already Butterworth-filtered by LLI
-        ], dtype=np.float32)        # float32 to match PyTorch default tensor dtype
+            pkt.x_dot,              # carriage velocity in m/s (Butterworth-filtered by LLI)
+        ], dtype=np.float32)
 
     def _reward(self, pkt, terminal_status: int) -> float:
-        """Compute the scalar reward for this transition (article eq. 11).
+        """Compute the scalar reward for one transition.
 
-        r = (1/2)(1 − cos θ) − (x / x_max)²
+        Reward formula:
+            r = (1/2)(1 − cos θ) − (x / x_max)²
 
-        The angle term ranges from 0 (hanging, θ=0) to 1 (upright, θ=π).
-        The position term penalises distance from centre; it equals 1 when
-        |x| = x_max, so total reward at the boundary is at most 0.
-        The limit_penalty is only added on the terminal step that triggered
-        a proximity sensor — angular-velocity terminations are not penalised
-        because the agent could not have avoided them so early in training.
+        Angle term (1/2)(1 − cos θ):
+            0 when hanging down (θ = 0), maximum 1 when upright (θ = π).
+            Using cos θ rather than θ² gives a smooth, periodic signal.
+
+        Position term (x / x_max)²:
+            0 at the rail centre, 1 at either limit. Penalises drifting to the edges.
+
+        The limit_penalty is only added when the proximity sensor fires (status=1),
+        giving a strong signal to avoid the rail ends. Angular-velocity terminations
+        (status=2) are not penalised because early in training the agent has no way
+        to prevent them.
         """
-        r = 0.5 * (1.0 - math.cos(pkt.theta)) - (pkt.x / self._x_max) ** 2   # base reward: angle term − position penalty
-        if terminal_status == 1:     # proximity sensor fired — cart hit a hard stop
-            r += self._limit_penalty    # subtract 400 to strongly discourage driving into the rail ends
-        return r   # scalar float; unbounded below (−400) and capped at 1.0
+        r = 0.5 * (1.0 - math.cos(pkt.theta)) - (pkt.x / self._x_max) ** 2
+        if terminal_status == 1:
+            r += self._limit_penalty   # strong negative signal for hitting the rail stop
+        return r
 
-    # ── public API ────────────────────────────────────────────────────────────
+    # ── Public API ────────────────────────────────────────────────────────────
 
     def reset(self) -> np.ndarray:
-        """Wait for homing to complete (requesting it if needed) and return the first observation.
+        """Wait for homing to finish and return the first observation of the new episode.
 
-        Three execution paths depending on why the previous episode ended:
+        Which of the three execution paths is taken depends on why the previous
+        episode ended:
 
-          Path A — First reset: lli_main.cpp completed startup homing before lli_loop
-                   started. Phase 0 confirms lli_loop is publishing, then Phase 2
-                   waits for status=0. No request_home is sent.
+          Path A — First reset ever:
+            The LLI ran a full homing sequence at startup before lli_loop started.
+            We just confirm the LLI is publishing and return the first observation.
+            No request_home is sent.
 
-          Path B — Auto-home terminal (last status was 1 or 2): LLI stopped the motor
-                   and began homing automatically. Phase 0 blocks until homing finishes
-                   and the LLI resumes. Phase 2 then returns the first status=0 packet.
-                   No request_home is sent.
+          Path B — Auto-home terminal (last status was 1 or 2, OR a status=1/2
+            packet appeared in the gap between episodes):
+            The LLI already stopped the motor and homed automatically. We wait for
+            it to finish homing and resume publishing, then return.
+            No request_home is sent.
 
-          Path C — Max-steps terminal (last status was 0): LLI did not auto-home.
-                   Phase 0 confirms the LLI is live, then Phase 1 sends request_home
-                   and waits for the LLI's status=3 acknowledgement before homing
-                   begins. Phase 2 waits for status=0.
+          Path C — Max-steps terminal (last status was 0 and no gap auto-home):
+            The LLI did not auto-home. We explicitly request homing and wait for
+            the LLI to acknowledge before homing begins.
         """
         self._step_count = 0
-        # Drain packets that accumulated since the last step; capture any auto-home
-        # terminal that the LLI may have published in the inter-episode gap.
+
+        # Drain stale packets from the previous episode. Capture any auto-home
+        # terminal (status=1/2) that the LLI published in the inter-episode gap
+        # (e.g. while we were doing gradient updates). If the LLI auto-homed in
+        # the gap but _last_terminal_status is still 0 (from the max-steps step),
+        # pre_gap will be 1 or 2 and we will correctly take Path B.
         pre_gap = self._client.flush()
 
-        # Phase 0: confirm lli_loop is publishing (5-min ceiling for startup homing)
+        # Phase 0: wait for the LLI to be live (blocks for up to 5 minutes to
+        # accommodate the long startup homing sequence on the first episode).
         print("  [reset] waiting for LLI ...", flush=True)
         if not self._client.poll(300_000):
             raise RuntimeError("LLI not responding after 5 minutes — is the Pi running?")
-        # Drain again; if the LLI just finished auto-homing this may hold the
-        # status=1/2 packet that was published right before homing began.
+
+        # Drain again: if the LLI just finished auto-homing, the status=1/2 packet
+        # published before homing started may now be at the front of the queue.
         post_gap = self._client.flush()
 
-        # If either flush saw a limit-hit (1) or ang-vel (2) terminal, the LLI
-        # auto-homed in the gap — treat exactly like an auto-home terminal path.
+        # Combine both flush results. Either flush catching a status=1 or 2 means
+        # the LLI auto-homed since the last step and we should take Path B.
         gap_autohomed = pre_gap in (1, 2) or post_gap in (1, 2)
 
         if self._first_reset:
-            # Path A: startup homing already done — skip to Phase 2
+            # Path A: startup homing was already done before lli_loop started.
             self._first_reset = False
             print("  [reset] first reset — startup homing already complete", flush=True)
 
         elif self._last_terminal_status != 0 or gap_autohomed:
-            # Path B: LLI auto-homed (either the terminal step flagged it, or a
-            # status=1/2 packet appeared in the inter-episode gap).
+            # Path B: LLI already homed — either the terminal step said so, or we
+            # saw a terminal status packet appear in the inter-episode gap.
             print(f"  [reset] auto-home path (last={self._last_terminal_status} gap={pre_gap}/{post_gap})", flush=True)
 
         else:
-            # Path C: max-steps terminal — LLI did not auto-home; request it explicitly.
+            # Path C: max-steps terminal with no auto-home — request it now.
             print("  [reset] requesting home ...", flush=True)
             self._request_home_and_wait_for_ack()
 
-        # Phase 2: wait for status=0 — homing complete and system ready for next episode
+        # Phase 2: wait for the first status=0 packet, confirming homing is done
+        # and the system is ready. During homing the LLI publishes nothing, so
+        # recv_state() blocks here until homing finishes and publishing resumes.
         print("  [reset] homing in progress ...", flush=True)
         while True:
             pkt = self._client.recv_state()
             if pkt.episode_status == 0:
-                return self._obs(pkt)
+                return self._obs(pkt)   # homing complete — return first observation
 
     def _request_home_and_wait_for_ack(self) -> None:
-        """Send request_home until homing is confirmed running, then stop and return.
+        """Send request_home repeatedly until the LLI confirms homing has started.
 
-        Two exit conditions — whichever comes first:
-          • status=3 received: LLI explicitly acknowledged the request.
-          • 200 ms silence: LLI has gone quiet, meaning homing is blocking its loop.
+        The LLI checks for request_home once per tick (every 20 ms), so we retry
+        every 100 ms to ensure it is received even if a packet is missed.
 
-        The silence path caps sends at 2 (t=0 and t=100 ms). The LLI's double
-        flush after homing (50 ms sleep between flushes) clears both. Retransmitting
-        beyond 200 ms of silence would put a new request_home into the freshly
-        flushed queue and trigger a second homing.
+        Two exit conditions — whichever arrives first:
+          • The LLI sends episode_status=3 (HOMING_STARTED): explicit acknowledgement.
+          • 200 ms of silence (no packets at all): the LLI has entered homing(), which
+            blocks its publish loop, confirming homing is running even without a status=3.
+
+        We stop sending after 200 ms of silence (at most 2 sends: t=0 and t=100 ms)
+        because continuing to send request_home after homing starts would put a new
+        request into the command queue. The LLI's double-flush after homing is designed
+        to drain exactly those 2 potentially queued messages; more would slip through.
         """
-        deadline = time.monotonic() + 30.0
-        last_send    = time.monotonic() - 1.0   # force immediate first send
-        last_packet_t = time.monotonic()
+        deadline     = time.monotonic() + 30.0     # give up after 30 seconds
+        last_send    = time.monotonic() - 1.0       # set to past so we send immediately on the first iteration
+        last_packet_t = time.monotonic()            # tracks when we last received any packet
 
         while time.monotonic() < deadline:
             now = time.monotonic()
 
             if now - last_packet_t > 0.2:
-                # 200 ms with no packets — homing is definitely running.
-                # Stop sending; Phase 2 will block until homing finishes.
+                # No packets for 200 ms — homing is blocking the LLI's publish loop.
+                # Stop sending and let Phase 2 wait for homing to finish.
                 self._client.flush()
                 return
 
             if now - last_send >= 0.1:
+                # Send (or re-send) the request_home command every 100 ms.
                 self._client.send_cmd(0, request_home=True)
                 last_send = now
 
-            if self._client.poll(20):
+            if self._client.poll(20):   # wait up to 20 ms for a packet
                 last_packet_t = time.monotonic()
                 pkt = self._client.recv_state()
                 if pkt.episode_status == EPISODE_HOMING_STARTED:
+                    # LLI explicitly acknowledged — homing is now starting.
+                    self._client.flush()   # discard any trailing packets before entering Phase 2
+                    return
+                if pkt.episode_status in (EPISODE_LIMIT_HIT, EPISODE_ANGVEL_EXCEED):
+                    # The LLI hit a terminal condition at the same moment we sent
+                    # request_home.  It will auto-home on its own — stop sending
+                    # more commands immediately so the LLI's post-auto-home flush
+                    # has as few stale request_home packets to drain as possible.
+                    # Phase 2 (the while loop in reset()) will wait for status=0.
                     self._client.flush()
                     return
 
         raise RuntimeError("LLI did not acknowledge request_home within 30 s")
 
     def step(self, action: int):
-        """Send one motor command and receive the resulting state.
+        """Send one motor command and receive the resulting state (one 50 Hz tick).
+
+        The LLI publishes at exactly 50 Hz, so recv_state() blocks for ~20 ms,
+        which naturally paces the control loop without any explicit sleep.
+
+        Args:
+            action: Integer action index — 0 (left), 1 (coast), or 2 (right).
 
         Returns:
-            obs:    Next 5-D observation vector.
-            reward: Scalar reward for this transition.
-            done:   True if the episode has ended (any terminal condition).
-            info:   Dict with 'episode_status' for diagnostics.
-
-        The LLI publishes a new StatePacket every 20 ms; recv_state() blocks
-        until that packet arrives, so this method naturally runs at 50 Hz
-        without any explicit sleep.
+            obs:    Next observation vector (5-D float32 numpy array).
+            reward: Scalar reward for this (state, action, next_state) transition.
+            done:   True if the episode has ended (limit hit, ang-vel exceeded, or max steps).
+            info:   Dict with 'episode_status' for logging and diagnostics.
         """
-        self._client.send_cmd(self._actions[action])   # translate action index (0/1/2) to signed duty and push to LLI
-        pkt = self._client.recv_state()                # block ~20 ms for the next 50 Hz tick
+        self._client.send_cmd(self._actions[action])   # translate action index to signed duty and send
+        pkt = self._client.recv_state()                # block until the LLI publishes the next state (~20 ms)
 
-        done = (                                         # episode ends if either condition is true:
-            pkt.episode_status != 0                      # LLI flagged a limit hit (1) or angular-vel exceeded (2)
-            or self._step_count >= self._max_steps - 1  # step budget exhausted (800 steps per article)
+        # Episode ends if the LLI flagged a safety condition OR we hit the step budget.
+        done = (
+            pkt.episode_status != 0                       # LLI flagged a limit hit (1) or ang-vel exceeded (2)
+            or self._step_count >= self._max_steps - 1   # step budget exhausted
         )
+
         if done:
-            # Record termination reason so reset() knows which homing path to take:
-            # non-zero means LLI auto-homed; 0 means max-steps and no auto-home.
+            # Record the terminal reason so reset() picks the correct homing path:
+            #   0 = max-steps (LLI did not auto-home → reset() must request it)
+            #   1 or 2 = auto-homed (reset() should wait, not request again)
             self._last_terminal_status = int(pkt.episode_status)
-        reward = self._reward(                           # compute scalar reward for this (s, a, s') transition
+
+        # Compute reward; only apply the limit penalty on the actual terminal step.
+        reward = self._reward(
             pkt,
-            pkt.episode_status if done else 0            # only apply limit_penalty on the actual terminal step
+            pkt.episode_status if done else 0   # pass 0 for non-terminal steps so penalty is never applied mid-episode
         )
-        self._step_count += 1   # advance the per-episode counter before the next call
+
+        self._step_count += 1
 
         return (
-            self._obs(pkt),                             # next observation for the agent
-            reward,                                     # scalar reward stored in replay buffer
-            done,                                       # done flag breaks the episode collection loop
-            {"episode_status": int(pkt.episode_status)},   # raw status code for logging / diagnostics
+            self._obs(pkt),
+            reward,
+            done,
+            {"episode_status": int(pkt.episode_status)},
         )
 
     def estop(self) -> None:
-        """Send an emergency-stop command — sets the estop flag in MotorCommand.
+        """Send an emergency-stop command to immediately halt the motor.
 
-        Called from the training loop's finally block so the motor is always
-        halted even if training is interrupted mid-episode.
+        Called from the training loop's finally block so the motor always
+        stops even if training is interrupted by an exception or Ctrl+C.
         """
-        self._client.send_cmd(0, estop=True)   # duty=0 and estop=1; LLI stops motor immediately on receipt
+        self._client.send_cmd(0, estop=True)   # duty=0, estop=1 — LLI stops the motor on the next tick

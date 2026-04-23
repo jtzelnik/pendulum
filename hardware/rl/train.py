@@ -1,25 +1,46 @@
 """
-Training entry point — run this on the PC while the LLI runs on the Pi.
+Training entry point — run this on the PC while the LLI is running on the Pi.
 
-Loop structure (appendix Table 2 / article §DQN):
+How the training loop works (high level):
 
-  Outer loop: episodes until total_steps reaches max_steps (150 000).
-    1. env.reset()  — blocks until Pi finishes homing (~120 s first time).
-    2. Episode collection: at each 50 Hz tick, select ε-greedy action,
-       send to Pi, receive next state, store transition in replay buffer.
-    3. Target-net sync: every target_update_interval (1000) env steps,
-       copy policy-net weights into target net.
-    4. End-of-episode training: run <episode_steps> gradient updates
-       using the Huber loss (one update per step the episode lasted).
-    5. Inference evaluation: every eval_interval (5000) env steps, run
-       one greedy episode and report the normalised return.
+  The agent alternates between two activities: collecting experience on the
+  real hardware, and updating the neural network from that experience.
+
+  Outer loop: runs episodes until total_steps reaches max_steps (150 000).
+    1. env.reset()  — blocks until the Pi finishes homing the carriage
+                      (~10–120 s depending on where the carriage is).
+    2. Episode collection (inner loop, one iteration per 50 Hz tick):
+         - Select an action with the ε-greedy policy (random with prob ε,
+           otherwise ask the network).
+         - Send the action to the Pi; block ~20 ms for the response.
+         - Store the (state, action, reward, next_state, done) transition
+           in the replay buffer for later training.
+         - Every target_update_interval (1000) env steps, copy policy-net
+           weights into the frozen target net (fixed Q-targets update).
+    3. End-of-episode training: run one gradient step per episode step.
+         - E.g. a 600-step episode → 600 calls to agent.train_step().
+         - Each call draws a fresh random 1024-sample batch from the buffer.
+         - This ensures the network gets more updates from longer, more
+           informative episodes.
+    4. Inference evaluation: every eval_interval (5000) env steps, run
+       one fully greedy episode (no random actions) and report the
+       normalised return.  This is the honest measure of policy quality.
+       A checkpoint is saved after every evaluation.
+
+  Warmup: for the first warmup_steps environment steps the agent ignores
+    the network and picks random actions.  This pre-populates the replay
+    buffer with diverse transitions before training starts, so the first
+    gradient steps have meaningful data to learn from.
 
 Usage:
     cd hardware/rl
     python train.py
 """
 
-import math                     # atan2 / degrees for live angle display
+import argparse                 # optional --checkpoint argument for resuming training
+import csv                      # CSV writer for per-episode training log
+import datetime                # timestamp for log filename
+import math                    # atan2 / degrees for live angle display
 import random                  # randrange for warmup random actions
 import yaml                    # parse config.yaml — PyYAML
 import numpy as np             # np.mean for logging the per-episode loss
@@ -46,11 +67,24 @@ def load_cfg(path: Path) -> dict:
 
 
 def run_inference(env: PendulumEnv, agent: DQNAgent, max_steps: int):
-    """Execute one greedy episode. Returns (norm_ret, done).
+    """Run one evaluation episode with the pure greedy policy — no exploration.
 
-    done=True means the LLI triggered a natural terminal (limit or ang-vel)
-    and will re-home on its own. done=False means the episode ran to max_steps
-    and the caller must request a re-home before the next training episode.
+    'Greedy' means the agent always picks the action with the highest Q-value;
+    it never takes a random action.  This gives an honest measure of how well
+    the trained policy performs (random actions during evaluation would make
+    the result noisy and incomparable across checkpoints).
+
+    The normalised return (norm_ret) divides the raw cumulative reward by
+    max_steps.  This puts performance on a consistent scale regardless of
+    episode length: a perfect episode that lasts max_steps scores near +1,
+    while an episode that ends early at a limit scores much lower.
+
+    Returns (norm_ret, done):
+        norm_ret — cumulative reward / max_steps; closer to +1 is better.
+        done     — True if the LLI auto-terminated (limit or ang-vel exceeded);
+                   the LLI will re-home on its own.
+                   False if the episode ran to max_steps; the next env.reset()
+                   must request homing explicitly.
     """
     obs   = env.reset()
     total = 0.0
@@ -80,6 +114,18 @@ def run_inference(env: PendulumEnv, agent: DQNAgent, max_steps: int):
 
 def main() -> None:
     """Build all objects from config.yaml and run the full training loop."""
+    parser = argparse.ArgumentParser(
+        description="Train the DQN agent on the real pendulum hardware."
+    )
+    parser.add_argument(
+        "--checkpoint",
+        default=None,
+        help="optional path to a .pt checkpoint to resume training from "
+             "(e.g. checkpoints/best.pt).  Warmup is skipped and total_steps "
+             "continues from where the checkpoint left off.",
+    )
+    args = parser.parse_args()
+
     cfg_path = Path(__file__).parent / "config.yaml"   # config.yaml sits next to this script
     cfg      = load_cfg(cfg_path)                       # parse into nested dict
 
@@ -121,10 +167,25 @@ def main() -> None:
     ckpt_dir = Path(__file__).parent / tr["checkpoint_dir"]   # resolve checkpoint dir relative to this script
     ckpt_dir.mkdir(parents=True, exist_ok=True)               # create the directory tree if it doesn't already exist
 
-    total_steps   = 0                        # cumulative environment steps across all episodes
-    episode       = 0                        # episode counter; main loop increments after each episode
-    next_eval_ep  = tr["eval_interval"]      # episode number at which to run the next inference
-    best_return   = -float("inf")
+    log_path   = ckpt_dir / f"train_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    log_file   = open(log_path, "w", newline="")
+    log_writer = csv.writer(log_file)
+    log_writer.writerow(["episode", "total_steps", "ep_len", "norm_ret", "mean_loss", "episode_status"])
+    print(f"Logging to {log_path}")
+
+    total_steps  = 0
+    episode      = 0
+    best_return  = -float("inf")
+
+    if args.checkpoint:
+        extras      = agent.load(args.checkpoint)
+        total_steps = extras.get("total_steps", tr["warmup_steps"])   # resume step counter; default skips warmup
+        episode     = extras.get("episode", 0)                         # resume episode counter
+        best_return = extras.get("best_return", -float("inf"))
+        print(f"Resumed from {args.checkpoint}  "
+              f"(total_steps={total_steps}, episode={episode})")
+
+    next_eval_ep = episode + tr["eval_interval"]   # first eval N episodes from now
 
     print(f"Training for {tr['max_steps']} env steps. "
           f"Warmup {tr['warmup_steps']} steps (random). "
@@ -137,11 +198,16 @@ def main() -> None:
             ep_return = 0.0           # raw cumulative reward for logging the normalised return
 
             # ── episode collection ────────────────────────────────────────
-            while True:                                                   # inner loop: one iteration = one 50 Hz LLI tick
-                if total_steps < tr["warmup_steps"]:                      # pure random exploration until buffer is seeded
-                    action = random.randrange(PendulumEnv.N_ACTIONS)      # ignore network — weights are meaningless before training
+            while True:                                                   # inner loop: one iteration = one 50 Hz LLI tick (~20 ms)
+                if total_steps < tr["warmup_steps"]:
+                    # Warmup: ignore the network and pick random actions.
+                    # The network's weights are random at the start, so its
+                    # Q-value predictions are meaningless.  Filling the buffer
+                    # with diverse random transitions first gives the first
+                    # gradient steps meaningful, varied data to learn from.
+                    action = random.randrange(PendulumEnv.N_ACTIONS)
                 else:
-                    action = agent.select_action(obs)                     # ε-greedy once buffer has enough data
+                    action = agent.select_action(obs)                     # ε-greedy: random with prob ε, best Q-value otherwise
                 next_obs, reward, done, info = env.step(action)           # send command, block ~20 ms, receive result
                 agent.buffer.add(obs, action, reward, next_obs, done)     # store transition for later sampling
                 obs        = next_obs   # advance observation for the next action selection
@@ -167,6 +233,9 @@ def main() -> None:
                     break
 
             episode += 1
+            # Divide cumulative reward by max_steps to normalise: a full episode
+            # at maximum reward scores +1; a short or low-reward episode scores
+            # much less, regardless of how many steps it lasted.
             norm_ret = ep_return / ep["max_steps"]
             print(f"\r{' '*100}\r", end="")   # clear the live step line
             print(f"ep {episode:4d} | steps {total_steps:6d} | "
@@ -174,9 +243,19 @@ def main() -> None:
                   f"status {info['episode_status']}")
 
             # ── end-of-episode training ───────────────────────────────────
+            # Run one gradient step per episode step.  A 600-step episode
+            # triggers 600 train_step() calls; each draws an independent
+            # random batch from the replay buffer.  Tying the gradient budget
+            # to episode length means more experience → more learning updates,
+            # while very short episodes (early bad episodes) don't over-train.
+            mean_loss = 0.0
             if len(agent.buffer) >= dqn_cfg["batch_size"]:
                 losses = [agent.train_step() for _ in range(ep_steps)]
-                print(f"         loss {np.mean(losses):.4f}")
+                mean_loss = float(np.mean(losses))
+                print(f"         loss {mean_loss:.4f}")
+
+            log_writer.writerow([episode, total_steps, ep_steps, f"{norm_ret:.6f}", f"{mean_loss:.6f}", info["episode_status"]])
+            log_file.flush()
 
             # ── inference evaluation ──────────────────────────────────────
             if episode >= next_eval_ep:
@@ -184,11 +263,12 @@ def main() -> None:
                 print(f"\n  [inference @ {total_steps}] norm_ret {inf_ret:+.3f}")
 
                 ckpt = ckpt_dir / f"dqn_{total_steps:06d}.pt"
-                agent.save(str(ckpt))
+                agent.save(str(ckpt), total_steps=total_steps, episode=episode, best_return=best_return)
 
                 if inf_ret > best_return:
                     best_return = inf_ret
-                    agent.save(str(ckpt_dir / "best.pt"))
+                    agent.save(str(ckpt_dir / "best.pt"),
+                               total_steps=total_steps, episode=episode, best_return=best_return)
                     print(f"  new best: {best_return:.3f}  →  best.pt\n")
 
                 next_eval_ep += tr["eval_interval"]
@@ -199,8 +279,10 @@ def main() -> None:
     finally:                                            # always executed, even on exception
         env.estop()                                     # send emergency-stop so the motor halts immediately
         client.close()                                  # tear down ZMQ sockets cleanly
-        agent.save(str(ckpt_dir / "final.pt"))          # preserve the last policy regardless of how training ended
-        print("Saved final.pt")                         # confirm the final checkpoint was written
+        agent.save(str(ckpt_dir / "final.pt"),
+                   total_steps=total_steps, episode=episode, best_return=best_return)
+        print("Saved final.pt")
+        log_file.close()                                # flush and close the CSV log
 
 
 if __name__ == "__main__":

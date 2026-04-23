@@ -98,8 +98,17 @@ int main() {
     }
 
     std::cout << "Manual drive at 50 Hz. Press ENTER to stop.\n\n";
+    // Column legend:
+    //   x(m)       — carriage position in metres; 0 = rail centre
+    //   x_dot(m/s) — carriage velocity in m/s; Butterworth-filtered
+    //   theta(rad) — pendulum angle in radians; 0 = hanging straight down
+    //   th_dot(r/s)— pendulum angular velocity in rad/s; Butterworth-filtered
+    //   near / far — raw proximity sensor levels (0 = triggered, 1 = clear)
+    //   motor      — current drive state (LEFT / RIGHT / COAST / LIMIT)
+    //   status     — episode_status (always 0 in manual drive — no RL logic)
+    //   dt(ms)     — actual loop period; should be close to 20.0 ms at 50 Hz
     std::cout << std::fixed << std::setprecision(4);   // fixed-point notation, 4 decimal places for all floats
-    std::cout << std::left                             // left-align all columns
+    std::cout << std::left                             // left-align all columns for readable table output
         << std::setw(10) << "x(m)"
         << std::setw(12) << "x_dot(m/s)"
         << std::setw(12) << "theta(rad)"
@@ -109,10 +118,10 @@ int main() {
         << std::setw(8)  << "motor"
         << std::setw(8)  << "status"
         << std::setw(10) << "dt(ms)"
-        << '\n';                                       // print column header row
+        << '\n';
 
-    StateEstimator estimator;   // owns Butterworth filter state across loop iterations
-    int64_t prev_ts = 0;        // timestamp of previous packet, used to compute actual dt for display
+    StateEstimator estimator;   // holds the Butterworth filter delay lines; must persist across ticks
+    int64_t prev_ts = 0;        // timestamp from the previous tick; used to compute the actual loop period
 
     using clock = std::chrono::steady_clock;   // monotonic clock alias
     auto next_tick = clock::now();             // absolute time of the next scheduled tick

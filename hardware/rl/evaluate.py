@@ -1,10 +1,23 @@
 """
-Evaluate a saved DQN checkpoint in pure greedy inference mode.
+Evaluate a saved DQN checkpoint — run the trained policy on the real hardware.
 
-No gradient updates are performed.  Each episode starts from the standard
-homed initial condition (θ = 0, x = 0, velocities = 0) as set by the LLI
-homing sequence.  The normalised return (cumulative reward / max_steps) is
-printed after every episode and summarised at the end.
+No gradient updates are performed; the network weights are frozen.  This
+script is used to measure how well a checkpoint performs after training is
+done, or to watch the pendulum balance in real time.
+
+Each episode starts from the standard homed initial condition (θ = 0,
+x = 0, velocities = 0) as set by the LLI homing sequence.
+
+Normalised return (norm_ret) = cumulative reward / max_steps.
+    A perfect episode (pendulum perfectly upright and centred for all
+    800 steps) scores near +1.  An episode that ends early at a rail
+    limit scores much lower.  Dividing by max_steps makes it possible
+    to compare episodes of different lengths on the same scale.
+
+Mean ± std across episodes: the mean tells you the average policy quality;
+    the standard deviation tells you how consistent it is.  A low std means
+    the policy behaves reliably; a high std means it sometimes works well
+    and sometimes fails.
 
 Usage:
     cd hardware/rl
@@ -42,20 +55,23 @@ def load_cfg(path: Path) -> dict:
 
 def main() -> None:
     """Parse arguments, load checkpoint, and run greedy evaluation episodes."""
-    parser = argparse.ArgumentParser(                      # set up the command-line interface
+    # argparse reads command-line arguments typed after the script name.
+    # 'checkpoint' is positional (required); '--episodes' is optional with default 1.
+    # Running 'python evaluate.py --help' prints a usage summary automatically.
+    parser = argparse.ArgumentParser(
         description="Run a saved DQN checkpoint on the real hardware."
     )
-    parser.add_argument(                                    # positional argument: required checkpoint path
+    parser.add_argument(                                    # positional: user must supply a checkpoint path
         "checkpoint",
         help="path to .pt checkpoint file, e.g. checkpoints/best.pt",
     )
-    parser.add_argument(                                    # optional argument: number of episodes to evaluate
+    parser.add_argument(                                    # optional: override number of eval episodes
         "--episodes",
         type=int,
         default=1,
         help="number of greedy inference episodes to run (default: 1)",
     )
-    args = parser.parse_args()   # parse sys.argv and populate args.checkpoint / args.episodes
+    args = parser.parse_args()   # reads sys.argv and fills args.checkpoint, args.episodes
 
     cfg_path = Path(__file__).parent / "config.yaml"   # config.yaml lives alongside this script
     cfg      = load_cfg(cfg_path)                       # parse all YAML sections
@@ -133,8 +149,10 @@ def main() -> None:
         client.close()          # tear down ZMQ sockets cleanly
 
     if returns:   # only print summary if at least one episode completed
+        # mean = average normalised return across all evaluated episodes
+        # std  = how much it varied — low std means the policy is consistent
         print(f"\nMean norm_ret over {len(returns)} episodes: "
-              f"{np.mean(returns):+.3f}  ±  {np.std(returns):.3f}")   # mean ± std across evaluated episodes
+              f"{np.mean(returns):+.3f}  ±  {np.std(returns):.3f}")
 
 
 if __name__ == "__main__":
