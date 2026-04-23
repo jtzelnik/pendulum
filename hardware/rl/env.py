@@ -92,31 +92,43 @@ class PendulumEnv:
     # ── public API ────────────────────────────────────────────────────────────
 
     def reset(self) -> np.ndarray:
-        """Request homing, wait for the LLI to complete it, return the first observation.
+        """Request homing, wait for it to complete, and return the first observation.
 
-        Keeps re-sending request_home (every ~150 ms) until the LLI goes silent,
-        which confirms the command was received and homing has started.  Then
-        blocks until packets resume with episode_status == 0.
+        Three-phase protocol:
 
-        This retry loop handles the ZMQ HWM race where a single request_home can
-        be dropped if the LLI's PULL buffer still holds the last motor command.
+          Phase 0 — wait for the LLI to be publishing at all.  On the very first
+                    call, lli_main.cpp runs its full startup homing before starting
+                    lli_loop(), so the ZMQ sockets don't exist yet.  This phase
+                    blocks until at least one packet arrives, then flushes so Phase 1
+                    starts from a clean baseline.
+
+          Phase 1 — resend request_home every 500 ms until the LLI goes silent.
+                    500 ms >> 20 ms tick, so silence reliably means homing started.
+                    Retrying handles any ZMQ HWM drops automatically.
+
+          Phase 2 — block until the LLI resumes publishing status=0, indicating
+                    homing is complete and the new episode can start.
         """
         self._step_count = 0
         self._client.flush()
-        print("  [reset] requesting home ...", flush=True)
+        print("  [reset] waiting for LLI ...", flush=True)
 
-        # Phase 1 — keep sending request_home until the LLI stops publishing.
-        # If a packet arrives within 150 ms the command wasn't acted on yet; flush
-        # stale packets and try again.  Once no packet arrives in 150 ms the LLI is
-        # in its homing routine (which is blocking on the Pi side).
+        # Phase 0 — wait for the first packet so we know lli_loop is running.
+        if not self._client.poll(300_000):   # 5-minute ceiling covers worst-case startup homing
+            raise RuntimeError("LLI not responding after 5 minutes — is the Pi running?")
+        self._client.flush()   # discard startup packets; begin Phase 1 from a clean queue
+
+        # Phase 1 — resend request_home until the LLI stops publishing for 500 ms.
+        print("  [reset] requesting home ...", flush=True)
         while True:
             self._client.send_cmd(0, request_home=True)
-            if not self._client.poll(150):   # 150 ms > 7 ticks — silence means homing started
+            if not self._client.poll(500):   # 500 ms silence → homing has started
                 break
-            self._client.flush()             # drain packets that arrived while polling
+            self._client.flush()             # drain packets that arrived; retry
 
-        # Phase 2 — homing is in progress; block until it finishes and the LLI
-        # resumes publishing normal (status=0) packets.
+        self._client.flush()   # discard any packet that arrived at the poll boundary
+
+        # Phase 2 — wait for homing to finish and the first clean status=0 packet.
         print("  [reset] homing in progress ...", flush=True)
         while True:
             pkt = self._client.recv_state()
