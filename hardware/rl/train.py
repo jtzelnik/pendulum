@@ -183,9 +183,9 @@ def main() -> None:
                 # Sleep 100 ms after sending so the LLI has time to receive
                 # the command and stop publishing before env.reset() flushes.
                 client.send_cmd(0, request_home=True)
-                time.sleep(0.1)
+                time.sleep(0.5)   # give LLI time to receive, stop publishing, enter homing
 
-                inf_ret, inf_done = run_inference(env, agent, ep["max_steps"])
+                inf_ret, _ = run_inference(env, agent, ep["max_steps"])
                 print(f"\n  [inference @ {total_steps}] norm_ret {inf_ret:+.3f}")
 
                 ckpt = ckpt_dir / f"dqn_{total_steps:06d}.pt"
@@ -198,12 +198,10 @@ def main() -> None:
 
                 next_eval_ep += tr["eval_interval"]
 
-                # If inference ended cleanly (max_steps, no natural terminal),
-                # the LLI hasn't re-homed — request one so the next training
-                # episode starts fresh too.
-                if not inf_done:
-                    client.send_cmd(0, request_home=True)
-                    time.sleep(0.1)
+                # Always request a home after inference so the next training
+                # episode starts from a clean state regardless of how inference ended.
+                client.send_cmd(0, request_home=True)
+                time.sleep(0.5)
 
     except KeyboardInterrupt:   # Ctrl+C pressed — exit gracefully rather than leaving the motor running
         print("\nInterrupted.")
