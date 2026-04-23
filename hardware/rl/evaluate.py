@@ -111,7 +111,8 @@ def main() -> None:
                 action_chr = ("L", "·", "R")[action]
                 print(
                     f"\r  ep {i+1:3d}  step {steps:3d}/{ep['max_steps']}"
-                    f"  [{action_chr}]  θ={theta_deg:+6.1f}°  x={obs[3]:+.3f}m"
+                    f"  [{action_chr}]  θ={theta_deg:+6.1f}°  dθ={obs[2]:+6.2f}r/s"
+                    f"  x={obs[3]:+.3f}m  dx={obs[4]:+5.2f}m/s"
                     f"  r={reward:+.4f}  Σ={total:+8.2f}",
                     end="", flush=True,
                 )

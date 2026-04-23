@@ -65,7 +65,8 @@ def run_inference(env: PendulumEnv, agent: DQNAgent, max_steps: int):
         action_chr = ("L", "·", "R")[action]
         print(
             f"\r  [inf] step {steps:4d}/{max_steps}"
-            f"  [{action_chr}]  θ={theta_deg:+6.1f}°  x={obs[3]:+.3f}m"
+            f"  [{action_chr}]  θ={theta_deg:+6.1f}°  dθ={obs[2]:+6.2f}r/s"
+            f"  x={obs[3]:+.3f}m  dx={obs[4]:+5.2f}m/s"
             f"  r={reward:+.4f}  Σ={total:+8.2f}",
             end="", flush=True,
         )
@@ -153,7 +154,8 @@ def main() -> None:
                 action_chr = ("L", "·", "R")[action]
                 print(
                     f"\r  ep {episode+1:4d}  step {ep_steps:3d}/{ep['max_steps']}"
-                    f"  [{action_chr}]  θ={theta_deg:+6.1f}°  x={obs[3]:+.3f}m"
+                    f"  [{action_chr}]  θ={theta_deg:+6.1f}°  dθ={obs[2]:+6.2f}r/s"
+                    f"  x={obs[3]:+.3f}m  dx={obs[4]:+5.2f}m/s"
                     f"  r={reward:+.4f}  Σ={ep_return:+8.2f}",
                     end="", flush=True,
                 )

@@ -115,23 +115,31 @@ class PendulumEnv:
                    begins. Phase 2 waits for status=0.
         """
         self._step_count = 0
-        self._client.flush()
+        # Drain packets that accumulated since the last step; capture any auto-home
+        # terminal that the LLI may have published in the inter-episode gap.
+        pre_gap = self._client.flush()
 
         # Phase 0: confirm lli_loop is publishing (5-min ceiling for startup homing)
         print("  [reset] waiting for LLI ...", flush=True)
         if not self._client.poll(300_000):
             raise RuntimeError("LLI not responding after 5 minutes — is the Pi running?")
-        self._client.flush()   # discard stale packets before deciding homing path
+        # Drain again; if the LLI just finished auto-homing this may hold the
+        # status=1/2 packet that was published right before homing began.
+        post_gap = self._client.flush()
+
+        # If either flush saw a limit-hit (1) or ang-vel (2) terminal, the LLI
+        # auto-homed in the gap — treat exactly like an auto-home terminal path.
+        gap_autohomed = pre_gap in (1, 2) or post_gap in (1, 2)
 
         if self._first_reset:
             # Path A: startup homing already done — skip to Phase 2
             self._first_reset = False
             print("  [reset] first reset — startup homing already complete", flush=True)
 
-        elif self._last_terminal_status != 0:
-            # Path B: LLI auto-homed; Phase 0 above may have already blocked until
-            # homing finished. Fall through to Phase 2 without sending request_home.
-            print(f"  [reset] auto-home path (last status={self._last_terminal_status})", flush=True)
+        elif self._last_terminal_status != 0 or gap_autohomed:
+            # Path B: LLI auto-homed (either the terminal step flagged it, or a
+            # status=1/2 packet appeared in the inter-episode gap).
+            print(f"  [reset] auto-home path (last={self._last_terminal_status} gap={pre_gap}/{post_gap})", flush=True)
 
         else:
             # Path C: max-steps terminal — LLI did not auto-home; request it explicitly.

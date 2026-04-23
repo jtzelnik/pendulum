@@ -60,17 +60,24 @@ class ZMQClient:
         """Return True if a StatePacket is available within timeout_ms, else False."""
         return bool(self._sub.poll(timeout=timeout_ms))
 
-    def flush(self) -> None:
-        """Drain all stale StatePackets that accumulated during homing.
+    def flush(self) -> int:
+        """Drain all stale StatePackets and return the highest episode_status seen.
 
         Called at the start of env.reset() so the first observation the
         agent sees is fresh, not a packet from the previous episode.
+        Returns the maximum episode_status found in the drained packets (0 if
+        the queue was empty), allowing the caller to detect whether an
+        auto-home terminal occurred in the gap between episodes.
         """
-        while True:                            # loop until the socket queue is empty
+        max_status = 0
+        while True:
             try:
-                self._sub.recv(zmq.NOBLOCK)    # NOBLOCK: returns immediately if no message is waiting
-            except zmq.error.Again:            # Again is raised when the queue is empty (EAGAIN)
-                break                          # queue is drained — exit loop
+                pkt = unpack_state(self._sub.recv(zmq.NOBLOCK))
+                if pkt.episode_status > max_status:
+                    max_status = pkt.episode_status
+            except zmq.error.Again:
+                break
+        return max_status
 
     def close(self) -> None:
         """Tear down sockets and the ZeroMQ context cleanly."""
