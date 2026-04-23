@@ -21,9 +21,9 @@ Reward (article eq. 11):
 Episode termination (either condition ends the episode):
     • episode_status != 0 — LLI detected a limit hit or |θ_dot| > 14 rad/s
     • step_count >= max_steps — maximum episode length reached
-After a terminal step the LLI automatically runs its homing sequence; the
-client does not need to command anything — env.reset() blocks until homing
-is complete and packets resume.
+For status != 0 terminals the LLI re-homes automatically. For max_steps
+(status=0) terminals the caller must send request_home before calling
+reset(), which then blocks until homing is complete and packets resume.
 """
 
 import math              # sin, cos for observation construction
@@ -94,11 +94,10 @@ class PendulumEnv:
     def reset(self) -> np.ndarray:
         """Wait for the LLI to finish homing and return the initial observation.
 
-        After a terminal step the LLI stops the motor, runs the full homing
-        sequence (~120 s for the pendulum to settle), then resumes publishing
-        at 50 Hz.  This method blocks until a packet with episode_status == 0
-        is received, which signals that homing is complete and the new episode
-        has started.
+        Blocks until a packet with episode_status == 0 is received, which
+        signals that homing is complete and the new episode has started.
+        Caller is responsible for having sent request_home before calling this
+        when the previous episode ended at max_steps (status=0).
         """
         self._step_count = 0
         self._client.flush()

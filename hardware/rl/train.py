@@ -173,18 +173,19 @@ def main() -> None:
                   f"status {info['episode_status']}")
 
             # ── end-of-episode training ───────────────────────────────────
-            if len(agent.buffer) >= dqn_cfg["batch_size"]:     # only train once the buffer has enough data for a full batch
-                losses = [agent.train_step() for _ in range(ep_steps)]   # one gradient step per episode step (appendix Table 2)
-                print(f"         loss {np.mean(losses):.4f}")             # log mean Huber loss over this batch of gradient steps
+            if len(agent.buffer) >= dqn_cfg["batch_size"]:
+                losses = [agent.train_step() for _ in range(ep_steps)]
+                print(f"         loss {np.mean(losses):.4f}")
+
+            # ── re-home before next episode ───────────────────────────────
+            # Episodes ending at max_steps (status=0) don't trigger automatic
+            # re-homing on the LLI. Always request one here so env.reset() at
+            # the top of the next iteration actually blocks for a clean start.
+            client.send_cmd(0, request_home=True)
+            time.sleep(0.5)
 
             # ── inference evaluation ──────────────────────────────────────
             if episode >= next_eval_ep:
-                # Re-home before inference so it starts from a clean state.
-                # Sleep 100 ms after sending so the LLI has time to receive
-                # the command and stop publishing before env.reset() flushes.
-                client.send_cmd(0, request_home=True)
-                time.sleep(0.5)   # give LLI time to receive, stop publishing, enter homing
-
                 inf_ret, _ = run_inference(env, agent, ep["max_steps"])
                 print(f"\n  [inference @ {total_steps}] norm_ret {inf_ret:+.3f}")
 
@@ -198,8 +199,8 @@ def main() -> None:
 
                 next_eval_ep += tr["eval_interval"]
 
-                # Always request a home after inference so the next training
-                # episode starts from a clean state regardless of how inference ended.
+                # Re-home after inference so the next training episode also
+                # starts clean (inference likely ended at max_steps, status=0).
                 client.send_cmd(0, request_home=True)
                 time.sleep(0.5)
 
