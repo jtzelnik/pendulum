@@ -291,7 +291,7 @@ class DQNAgent:
         Returns:
             Dict of non-network keys stored in the checkpoint.
         """
-        ckpt = torch.load(path, map_location=self.device)
+        ckpt = torch.load(path, map_location=self.device, weights_only=False)
         self.policy_net.load_state_dict(ckpt["policy_net"])   # restore trained weights
         self.target_net.load_state_dict(ckpt["target_net"])   # restore target weights
         if "optimizer" in ckpt:
