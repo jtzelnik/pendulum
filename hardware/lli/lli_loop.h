@@ -4,9 +4,9 @@
 #include <atomic>                // std::atomic<bool> — shared stop flag polled each tick
 
 // ── lli_loop ──────────────────────────────────────────────────────────────────
-// The main 50 Hz real-time control loop. Call this after startup homing is done.
+// The main 20 Hz real-time control loop. Call this after startup homing is done.
 //
-// Every 20 ms it:
+// Every 50 ms it:
 //   1. Reads both encoders and publishes a StatePacket over ZeroMQ (port 5555).
 //   2. Checks limit sensors and angular velocity for episode-ending conditions.
 //   3. If a terminal was detected: stops the motor and runs a re-homing sequence.

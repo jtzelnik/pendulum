@@ -31,7 +31,7 @@ Reward (per step):
 Episode termination:
     • episode_status != 0 — LLI detected a limit hit (1) or |θ_dot| > 14 rad/s (2).
       The LLI auto-homes in both cases, so reset() does not send request_home.
-    • step_count >= max_steps — episode length cap reached (800 steps = 16 s).
+    • step_count >= max_steps — episode length cap reached (800 steps = 40 s at 20 Hz).
       The LLI does NOT auto-home in this case, so reset() sends request_home.
 """
 
@@ -45,13 +45,13 @@ from protocol import (EPISODE_HOMING_STARTED,   # status code 3: LLI confirmed i
 
 
 class PendulumEnv:
-    """Real-hardware RL environment. One env step = one 50 Hz LLI control tick (20 ms)."""
+    """Real-hardware RL environment. One env step = one 20 Hz LLI control tick (50 ms)."""
 
     N_ACTIONS = 3   # number of discrete actions: left, coast, right
     OBS_DIM   = 5   # observation dimension: [sin θ, cos θ, θ_dot, x, x_dot]
 
     def __init__(self, client: ZMQClient, duty: int, x_max: float,
-                 max_steps: int, limit_penalty: float) -> None:
+                 max_steps: int, limit_penalty: float, loop_hz: int) -> None:
         """Set up the environment with the open ZMQ connection and episode parameters.
 
         Args:
@@ -60,11 +60,14 @@ class PendulumEnv:
             x_max:         Track half-length in metres (e.g. 0.35). Used in reward denominator.
             max_steps:     Maximum steps before the episode is force-terminated (e.g. 800).
             limit_penalty: Extra negative reward added when the carriage hits a limit (e.g. −400).
+            loop_hz:       LLI control loop frequency in Hz; must match the compiled LLI binary.
         """
         self._client        = client
         self._x_max         = x_max
         self._max_steps     = max_steps
         self._limit_penalty = limit_penalty
+        self._tick_ms       = int(1000 / loop_hz)   # one tick in milliseconds; scales poll/retry timeouts
+        self._loop_hz       = loop_hz
         # Map action indices to signed duty values: 0=left, 1=coast, 2=right.
         self._actions       = [-duty, 0, duty]
         self._step_count           = 0     # steps taken in the current episode
@@ -184,15 +187,15 @@ class PendulumEnv:
     def _request_home_and_wait_for_ack(self) -> None:
         """Send request_home repeatedly until the LLI confirms homing has started.
 
-        The LLI checks for request_home once per tick (every 20 ms), so we retry
-        every 100 ms to ensure it is received even if a packet is missed.
+        The LLI checks for request_home once per tick (every tick_ms ms), so we retry
+        every 2 ticks to ensure it is received even if a packet is missed.
 
         Two exit conditions — whichever arrives first:
           • The LLI sends episode_status=3 (HOMING_STARTED): explicit acknowledgement.
-          • 200 ms of silence (no packets at all): the LLI has entered homing(), which
+          • 4 ticks of silence (no packets at all): the LLI has entered homing(), which
             blocks its publish loop, confirming homing is running even without a status=3.
 
-        We stop sending after 200 ms of silence (at most 2 sends: t=0 and t=100 ms)
+        We stop sending after 4 ticks of silence (at most 2 sends: t=0 and t=2 ticks)
         because continuing to send request_home after homing starts would put a new
         request into the command queue. The LLI's double-flush after homing is designed
         to drain exactly those 2 potentially queued messages; more would slip through.
@@ -204,18 +207,18 @@ class PendulumEnv:
         while time.monotonic() < deadline:
             now = time.monotonic()
 
-            if now - last_packet_t > 0.2:
-                # No packets for 200 ms — homing is blocking the LLI's publish loop.
+            if now - last_packet_t > 4.0 / self._loop_hz:
+                # No packets for 4 ticks — homing is blocking the LLI's publish loop.
                 # Stop sending and let Phase 2 wait for homing to finish.
                 self._client.flush()
                 return
 
-            if now - last_send >= 0.1:
-                # Send (or re-send) the request_home command every 100 ms.
+            if now - last_send >= 2.0 / self._loop_hz:
+                # Send (or re-send) the request_home command every 2 ticks.
                 self._client.send_cmd(0, request_home=True)
                 last_send = now
 
-            if self._client.poll(20):   # wait up to 20 ms for a packet
+            if self._client.poll(self._tick_ms):   # wait up to one tick for a packet
                 last_packet_t = time.monotonic()
                 pkt = self._client.recv_state()
                 if pkt.episode_status == EPISODE_HOMING_STARTED:
@@ -234,9 +237,9 @@ class PendulumEnv:
         raise RuntimeError("LLI did not acknowledge request_home within 30 s")
 
     def step(self, action: int):
-        """Send one motor command and receive the resulting state (one 50 Hz tick).
+        """Send one motor command and receive the resulting state (one 20 Hz tick).
 
-        The LLI publishes at exactly 50 Hz, so recv_state() blocks for ~20 ms,
+        The LLI publishes at exactly 20 Hz, so recv_state() blocks for ~50 ms,
         which naturally paces the control loop without any explicit sleep.
 
         Args:
@@ -249,7 +252,7 @@ class PendulumEnv:
             info:   Dict with 'episode_status' for logging and diagnostics.
         """
         self._client.send_cmd(self._actions[action])   # translate action index to signed duty and send
-        pkt = self._client.recv_state()                # block until the LLI publishes the next state (~20 ms)
+        pkt = self._client.recv_state()                # block until the LLI publishes the next state (~50 ms)
 
         # Episode ends if the LLI flagged a safety condition OR we hit the step budget.
         done = (

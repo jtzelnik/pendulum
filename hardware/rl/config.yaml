@@ -1,3 +1,7 @@
+# Control loop frequency in Hz.
+# Changing this requires rebuilding the LLI binary on the Pi: make LOOP_HZ=<n>
+loop_hz: 20
+
 connection:
   host: "192.168.10.2"
   port_state: 5555
@@ -8,7 +12,7 @@ hardware:
   x_max: 0.35     # track half-length in metres; used in reward and limit detection
 
 episode:
-  max_steps:      2500
+  max_steps:      800      # 800 steps × 50 ms/step = 40 s max episode duration at 20 Hz
   limit_penalty: -400.0   # added to reward on episode_status == 1 (limit sensor hit)
 
 dqn:

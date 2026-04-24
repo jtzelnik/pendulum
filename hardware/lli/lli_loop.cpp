@@ -13,10 +13,10 @@
 static constexpr double THETA_DOT_LIMIT = 14.0;   // rad/s
 
 // ── lli_loop ─────────────────────────────────────────────────────────────────
-// The 50 Hz real-time control loop. This is the core of the LLI — it runs
+// The 20 Hz real-time control loop. This is the core of the LLI — it runs
 // continuously during training and ties the hardware to the RL client.
 //
-// What happens every tick (20 ms):
+// What happens every tick (50 ms):
 //   1. Sleep until the next scheduled tick time.
 //   2. Read both encoders → compute state {x, ẋ, θ, θ̇}.
 //   3. Check safety conditions (limit sensors, angular velocity).
@@ -75,13 +75,13 @@ void lli_loop(EncoderState& enc_carriage, EncoderState& enc_pendulum,
     using clock = std::chrono::steady_clock;
     auto next_tick = clock::now();
 
-    std::cout << "[lli] running at 50 Hz\n"
+    std::cout << "[lli] running at " << LOOP_HZ << " Hz\n"
               << "[lli] PUB StatePacket   -> tcp:5555\n"
               << "[lli] PULL MotorCommand <- tcp:5556\n";
 
     while (!done) {
-        // Advance the target time by one 20 ms period and sleep until we reach it.
-        next_tick += std::chrono::milliseconds(20);
+        // Advance the target time by one tick period and sleep until we reach it.
+        next_tick += std::chrono::milliseconds(LOOP_PERIOD_MS);
         std::this_thread::sleep_until(next_tick);
 
         // ── State estimation ──────────────────────────────────────────────────
@@ -107,8 +107,8 @@ void lli_loop(EncoderState& enc_carriage, EncoderState& enc_pendulum,
         // ZMQ_NOBLOCK: if no subscriber is connected the packet is silently dropped.
         zmq_send(pub, &pkt, sizeof(pkt), ZMQ_NOBLOCK);
 
-        // ── Console display (every 25 ticks = 0.5 s) ─────────────────────────
-        if (++tick_count % 25 == 0) {
+        // ── Console display (every LOOP_HZ/2 ticks = 0.5 s) ─────────────────
+        if (++tick_count % (LOOP_HZ / 2) == 0) {
             std::printf("\r[lli]  x=%+6.3f m  x_dot=%+6.3f m/s  θ=%+6.3f rad  θ_dot=%+7.3f rad/s   ",
                         pkt.x, pkt.x_dot, pkt.theta, pkt.theta_dot);
             std::fflush(stdout);

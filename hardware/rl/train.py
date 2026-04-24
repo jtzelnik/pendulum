@@ -9,10 +9,10 @@ How the training loop works (high level):
   Outer loop: runs episodes until total_steps reaches max_steps (150 000).
     1. env.reset()  — blocks until the Pi finishes homing the carriage
                       (~10–120 s depending on where the carriage is).
-    2. Episode collection (inner loop, one iteration per 50 Hz tick):
+    2. Episode collection (inner loop, one iteration per 20 Hz tick):
          - Select an action with the ε-greedy policy (random with prob ε,
            otherwise ask the network).
-         - Send the action to the Pi; block ~20 ms for the response.
+         - Send the action to the Pi; block ~50 ms for the response.
          - Store the (state, action, reward, next_state, done) transition
            in the replay buffer for later training.
          - Every target_update_interval (1000) env steps, copy policy-net
@@ -129,6 +129,7 @@ def main() -> None:
     cfg_path = Path(__file__).parent / "config.yaml"   # config.yaml sits next to this script
     cfg      = load_cfg(cfg_path)                       # parse into nested dict
 
+    loop_hz = cfg["loop_hz"]       # control loop frequency; must match the compiled LLI binary
     conn    = cfg["connection"]   # host / port_state / port_cmd
     hw      = cfg["hardware"]     # duty / x_max
     ep      = cfg["episode"]      # max_steps / limit_penalty
@@ -152,6 +153,7 @@ def main() -> None:
         x_max         = hw["x_max"],       # track half-length for reward and boundary (0.35 m)
         max_steps     = ep["max_steps"],   # maximum steps per episode (800)
         limit_penalty = ep["limit_penalty"],   # reward penalty on limit-sensor terminal (−400)
+        loop_hz       = loop_hz,           # control loop frequency; scales poll/retry timeouts
     )
     agent = DQNAgent(                                              # construct policy net, target net, buffer, and optimiser
         hidden_sizes           = net_cfg["hidden_sizes"],          # [256, 256] from appendix S3
@@ -198,7 +200,7 @@ def main() -> None:
             ep_return = 0.0           # raw cumulative reward for logging the normalised return
 
             # ── episode collection ────────────────────────────────────────
-            while True:                                                   # inner loop: one iteration = one 50 Hz LLI tick (~20 ms)
+            while True:                                                   # inner loop: one iteration = one 20 Hz LLI tick (~50 ms)
                 if total_steps < tr["warmup_steps"]:
                     # Warmup: ignore the network and pick random actions.
                     # The network's weights are random at the start, so its
@@ -208,7 +210,7 @@ def main() -> None:
                     action = random.randrange(PendulumEnv.N_ACTIONS)
                 else:
                     action = agent.select_action(obs)                     # ε-greedy: random with prob ε, best Q-value otherwise
-                next_obs, reward, done, info = env.step(action)           # send command, block ~20 ms, receive result
+                next_obs, reward, done, info = env.step(action)           # send command, block ~50 ms, receive result
                 agent.buffer.add(obs, action, reward, next_obs, done)     # store transition for later sampling
                 obs        = next_obs   # advance observation for the next action selection
                 ep_steps  += 1          # count steps for the gradient-step budget

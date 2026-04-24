@@ -1,6 +1,6 @@
 #include "pendulum_hw.h"   // pin assignments, EncoderState, QUAD_TABLE, set_motor
 #include "homing.h"        // homing() — physical calibration before control begins
-#include "lli_loop.h"      // lli_loop() — the 50 Hz ZeroMQ control loop
+#include "lli_loop.h"      // lli_loop() — the 20 Hz ZeroMQ control loop
 #include <iostream>        // std::cout, std::cerr for startup and error messages
 #include <atomic>          // std::atomic: shared variables safe to read/write from multiple threads
 #include <thread>          // std::thread: run the ENTER-key listener in the background
@@ -158,7 +158,7 @@ int main() {
         return 1;
     }
 
-    // Hand off to the 50 Hz ZeroMQ control loop. This function runs until
+    // Hand off to the 20 Hz ZeroMQ control loop. This function runs until
     // done is set (Ctrl+C or ENTER), then returns so we can clean up.
     lli_loop(enc1, enc2, done);
 

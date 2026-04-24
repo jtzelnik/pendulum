@@ -23,9 +23,16 @@ inline constexpr unsigned MOTOR_DUTY = 230;
 // producing 4 × 600 = 2400 unique positions per shaft revolution.
 inline constexpr long long COUNTS_PER_REV = 2400;
 
-// Nominal loop period: the control loop targets 50 Hz (one tick every 20 ms).
-// The actual elapsed time is measured each tick for accurate velocity estimation.
-inline constexpr double DT = 0.02;   // seconds
+// ── Loop frequency ────────────────────────────────────────────────────────────
+// LOOP_HZ is injected by the Makefile via -D LOOP_HZ=<n> (default 20).
+// Override at build time: make LOOP_HZ=50
+// Must match loop_hz in hardware/rl/config.yaml.
+// Exact integer-period frequencies work cleanly: 10, 20, 25, 50, 100 Hz.
+#ifndef LOOP_HZ
+#define LOOP_HZ 20
+#endif
+inline constexpr double DT             = 1.0  / LOOP_HZ;   // seconds per tick (nominal)
+inline constexpr int    LOOP_PERIOD_MS = 1000 / LOOP_HZ;   // milliseconds per tick
 
 inline constexpr double PI = 3.14159265358979323846;
 
@@ -45,25 +52,30 @@ inline constexpr double RAD_PER_COUNT = (2.0 * PI) / COUNTS_PER_REV;
 // (e.g., 0 counts one tick then 2 counts the next). A low-pass filter smooths
 // these out while keeping the estimate responsive to real motion.
 //
-// Filter design: 2nd-order Butterworth, Fc = 20 Hz, Fs = 50 Hz.
-//   - Butterworth: maximally flat response in the passband (no ripple below 20 Hz).
-//   - Fc = 20 Hz: passes frequencies up to 20 Hz unattenuated; attenuates above.
-//     This is 80 % of Nyquist (25 Hz) — very responsive, minimal phase lag.
-//   - Designed via bilinear transform: K = tan(π × Fc / Fs) = tan(72°) = 3.07768.
+// Filter design: 2nd-order Butterworth, Fc = LOOP_HZ/4, Fs = LOOP_HZ.
+//   - Fc is always set to Fs/4 (quarter of the sample rate) regardless of LOOP_HZ.
+//     This is intentional: Fc/Fs = 0.25 keeps the filter at 50 % of Nyquist for any rate,
+//     so the coefficients below are CONSTANT and do not need recomputing when LOOP_HZ changes.
+//   - At 20 Hz: Fc = 5 Hz (passes pendulum dynamics < ~3 Hz, attenuates noise above).
+//   - Designed via bilinear transform: K = tan(π × Fc / Fs) = tan(π/4) = 1.0 (exact always).
+//     Fc = Fs/4 is the special case where K = 1, giving the clean closed-form coefficients
+//     below and eliminating the A1 feedback term (A1 = 0 exactly).
 //
 // The filter is a "biquad" — a two-pole IIR section — with difference equation:
 //   y[n] = B0·x[n] + B1·x[n-1] + B2·x[n-2] − A1·y[n-1] − A2·y[n-2]
 // where x[n] is raw velocity this tick and y[n] is the filtered output.
-// B0/B1/B2 weight current and past inputs; A1/A2 feed past outputs back in.
 //
-// Note: A1 is positive here because Fc (20 Hz) > Fs/4 (12.5 Hz). This is
-// mathematically correct — the filter is still stable because the pole
-// magnitude √A2 = 0.642 is less than 1 (the stability requirement for IIR filters).
-inline constexpr double VEL_B0 =  0.63888;
-inline constexpr double VEL_B1 =  1.27776;
-inline constexpr double VEL_B2 =  0.63888;
-inline constexpr double VEL_A1 =  1.14282;
-inline constexpr double VEL_A2 =  0.41259;
+// Coefficients (exact closed forms):
+//   B0 = B2 = 1 − 1/√2  ≈ 0.292893
+//   B1      = 2 − √2    ≈ 0.585786
+//   A1      = 0.0        (exact — consequence of Fc = Fs/4)
+//   A2      = 3 − 2√2   ≈ 0.171573
+//   pole magnitude = √A2 = √2 − 1 ≈ 0.414 < 1  ✓ stable
+inline constexpr double VEL_B0 =  0.292893;
+inline constexpr double VEL_B1 =  0.585786;
+inline constexpr double VEL_B2 =  0.292893;
+inline constexpr double VEL_A1 =  0.0;
+inline constexpr double VEL_A2 =  0.171573;
 
 // ── Quadrature decode table ──────────────────────────────────────────────────
 // A quadrature encoder outputs two square-wave signals (A and B) that are

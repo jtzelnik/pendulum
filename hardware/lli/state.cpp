@@ -1,6 +1,6 @@
 #include "state.h"   // StatePacket, StateEstimator, Biquad, DT, VEL_B*/A*, METERS_PER_COUNT, RAD_PER_COUNT
 
-// Called once per 50 Hz tick by lli_loop (and manual_drive).
+// Called once per 20 Hz tick by lli_loop (and manual_drive).
 // Reads the current encoder counts, computes position and velocity for both
 // axes, runs velocity through the Butterworth filter, and returns a fully
 // populated StatePacket ready to be sent over ZeroMQ to the RL client.
@@ -8,13 +8,13 @@ StatePacket StateEstimator::update(const EncoderState& enc_carriage,
                                    const EncoderState& enc_pendulum)
 {
     // Capture the current wall-clock time at the top of this call.
-    // We measure actual elapsed time rather than assuming exactly 20 ms because
+    // We measure actual elapsed time rather than assuming exactly 50 ms because
     // the OS scheduler and pigpio can cause the loop to wake a few microseconds
     // early or late. Using real dt keeps velocity accurate rather than
     // accumulating a small systematic error on every tick.
     auto now = std::chrono::steady_clock::now();
 
-    double dt = DT;   // fall back to the nominal 20 ms on the very first call
+    double dt = DT;   // fall back to the nominal 50 ms on the very first call
     if (!first_call)  // after the first call, last_time is valid and we can measure the real gap
         dt = std::chrono::duration<double>(now - last_time).count();   // returns elapsed seconds as a double
     first_call = false;
@@ -52,7 +52,7 @@ StatePacket StateEstimator::update(const EncoderState& enc_carriage,
     pkt.x     = static_cast<double>(c1) * METERS_PER_COUNT;
     pkt.theta = static_cast<double>(c2) * RAD_PER_COUNT;
 
-    // Run raw velocities through the 2nd-order Butterworth filter (Fc=20 Hz, Fs=50 Hz).
+    // Run raw velocities through the 2nd-order Butterworth filter (Fc=5 Hz, Fs=20 Hz).
     // The same five coefficients (VEL_B0/B1/B2/A1/A2) are used for both axes;
     // each has its own Biquad instance so their delay lines remain independent.
     pkt.x_dot     = bq_xdot.tick (raw_xdot,  VEL_B0, VEL_B1, VEL_B2, VEL_A1, VEL_A2);

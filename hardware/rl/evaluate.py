@@ -76,6 +76,7 @@ def main() -> None:
     cfg_path = Path(__file__).parent / "config.yaml"   # config.yaml lives alongside this script
     cfg      = load_cfg(cfg_path)                       # parse all YAML sections
 
+    loop_hz = cfg["loop_hz"]       # control loop frequency; must match the compiled LLI binary
     conn    = cfg["connection"]   # host / port_state / port_cmd
     hw      = cfg["hardware"]     # duty / x_max
     ep      = cfg["episode"]      # max_steps / limit_penalty
@@ -97,6 +98,7 @@ def main() -> None:
         x_max         = hw["x_max"],          # track half-length for reward (0.35 m)
         max_steps     = ep["max_steps"],      # episode length cap (800)
         limit_penalty = ep["limit_penalty"],  # reward penalty on limit hit (−400)
+        loop_hz       = loop_hz,              # control loop frequency; scales poll/retry timeouts
     )
     agent = DQNAgent(                                              # construct agent with same architecture as training
         hidden_sizes           = net_cfg["hidden_sizes"],          # must match the saved checkpoint — [256, 256]
