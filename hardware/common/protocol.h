@@ -10,11 +10,11 @@
 // is not a concern, but the Python side uses '<' (explicit little-endian) in
 // struct.pack/unpack to make the assumption explicit.
 //
-// StatePacket  — LLI → PC, published once per 20 Hz tick.   48 bytes.
+// StatePacket  — LLI → PC, published once per control tick.   48 bytes.
 // MotorCommand — PC  → LLI, pushed by the PC each tick.      8 bytes.
 
 // ── StatePacket ───────────────────────────────────────────────────────────────
-// One packet is published by the LLI every 50 ms. The PC receives it and
+// One packet is published by the LLI every control tick. The PC receives it and
 // extracts the state vector for the RL model.
 //
 // Memory layout (C struct, little-endian):

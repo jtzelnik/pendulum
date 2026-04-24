@@ -6,7 +6,7 @@ buffering, and framing so we don't have to deal with raw sockets. It provides
 two socket patterns here:
 
   SUB (subscriber) — receives StatePackets broadcast by the LLI's PUB socket.
-    The LLI sends one packet per 20 Hz tick; if the PC is slow it can fall behind.
+    The LLI sends one packet per control tick; if the PC is slow it can fall behind.
     Calling flush() drains any queued-up packets before starting a new episode.
 
   PUSH — sends MotorCommands to the LLI's PULL socket.
@@ -26,8 +26,8 @@ class ZMQClient:
     """Manages the two ZeroMQ sockets used to communicate with the LLI.
 
     Create one instance before training starts; close it in the finally block.
-    Both sockets are blocking by default — recv_state() will wait up to ~50 ms
-    for the next 20 Hz packet, which naturally paces the control loop.
+    Both sockets are blocking by default — recv_state() will wait up to one tick
+    for the next packet, which naturally paces the control loop.
     """
 
     def __init__(self, host: str, port_state: int, port_cmd: int) -> None:
@@ -63,7 +63,7 @@ class ZMQClient:
     def recv_state(self) -> StatePacket:
         """Block until the next StatePacket arrives and return it decoded.
 
-        Normally returns within ~50 ms (one 20 Hz tick). During homing the LLI
+        Normally returns within one control tick. During homing the LLI
         stops publishing, so this will block for the full duration of homing
         (~10–120 s depending on the sequence). That is expected behaviour —
         env.reset() calls recv_state() in a loop waiting for homing to finish.

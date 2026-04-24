@@ -31,7 +31,7 @@ Reward (per step):
 Episode termination:
     • episode_status != 0 — LLI detected a limit hit (1) or |θ_dot| > 14 rad/s (2).
       The LLI auto-homes in both cases, so reset() does not send request_home.
-    • step_count >= max_steps — episode length cap reached (800 steps = 40 s at 20 Hz).
+    • step_count >= max_steps — episode length cap reached (max_steps / loop_hz seconds).
       The LLI does NOT auto-home in this case, so reset() sends request_home.
 """
 
@@ -45,7 +45,7 @@ from protocol import (EPISODE_HOMING_STARTED,   # status code 3: LLI confirmed i
 
 
 class PendulumEnv:
-    """Real-hardware RL environment. One env step = one 20 Hz LLI control tick (50 ms)."""
+    """Real-hardware RL environment. One env step = one LLI control tick (1/loop_hz seconds)."""
 
     N_ACTIONS = 3   # number of discrete actions: left, coast, right
     OBS_DIM   = 5   # observation dimension: [sin θ, cos θ, θ_dot, x, x_dot]
@@ -187,8 +187,8 @@ class PendulumEnv:
     def _request_home_and_wait_for_ack(self) -> None:
         """Send request_home repeatedly until the LLI confirms homing has started.
 
-        The LLI checks for request_home once per tick (every tick_ms ms), so we retry
-        every 2 ticks to ensure it is received even if a packet is missed.
+        The LLI checks for request_home once per tick, so we retry every 2 ticks
+        to ensure it is received even if a packet is missed.
 
         Two exit conditions — whichever arrives first:
           • The LLI sends episode_status=3 (HOMING_STARTED): explicit acknowledgement.
@@ -237,9 +237,9 @@ class PendulumEnv:
         raise RuntimeError("LLI did not acknowledge request_home within 30 s")
 
     def step(self, action: int):
-        """Send one motor command and receive the resulting state (one 20 Hz tick).
+        """Send one motor command and receive the resulting state (one control tick).
 
-        The LLI publishes at exactly 20 Hz, so recv_state() blocks for ~50 ms,
+        The LLI publishes at loop_hz Hz, so recv_state() blocks for one tick period,
         which naturally paces the control loop without any explicit sleep.
 
         Args:
@@ -252,7 +252,7 @@ class PendulumEnv:
             info:   Dict with 'episode_status' for logging and diagnostics.
         """
         self._client.send_cmd(self._actions[action])   # translate action index to signed duty and send
-        pkt = self._client.recv_state()                # block until the LLI publishes the next state (~50 ms)
+        pkt = self._client.recv_state()                # block until the LLI publishes the next state (~one tick)
 
         # Episode ends if the LLI flagged a safety condition OR we hit the step budget.
         done = (

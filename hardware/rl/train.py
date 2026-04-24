@@ -9,10 +9,10 @@ How the training loop works (high level):
   Outer loop: runs episodes until total_steps reaches max_steps (150 000).
     1. env.reset()  — blocks until the Pi finishes homing the carriage
                       (~10–120 s depending on where the carriage is).
-    2. Episode collection (inner loop, one iteration per 20 Hz tick):
+    2. Episode collection (inner loop, one iteration per control tick):
          - Select an action with the ε-greedy policy (random with prob ε,
            otherwise ask the network).
-         - Send the action to the Pi; block ~50 ms for the response.
+         - Send the action to the Pi; block ~one tick for the response.
          - Store the (state, action, reward, next_state, done) transition
            in the replay buffer for later training.
          - Every target_update_interval (1000) env steps, copy policy-net
@@ -200,7 +200,7 @@ def main() -> None:
             ep_return = 0.0           # raw cumulative reward for logging the normalised return
 
             # ── episode collection ────────────────────────────────────────
-            while True:                                                   # inner loop: one iteration = one 20 Hz LLI tick (~50 ms)
+            while True:                                                   # inner loop: one iteration = one LLI control tick
                 if total_steps < tr["warmup_steps"]:
                     # Warmup: ignore the network and pick random actions.
                     # The network's weights are random at the start, so its
@@ -210,7 +210,7 @@ def main() -> None:
                     action = random.randrange(PendulumEnv.N_ACTIONS)
                 else:
                     action = agent.select_action(obs)                     # ε-greedy: random with prob ε, best Q-value otherwise
-                next_obs, reward, done, info = env.step(action)           # send command, block ~50 ms, receive result
+                next_obs, reward, done, info = env.step(action)           # send command, block ~one tick, receive result
                 agent.buffer.add(obs, action, reward, next_obs, done)     # store transition for later sampling
                 obs        = next_obs   # advance observation for the next action selection
                 ep_steps  += 1          # count steps for the gradient-step budget

@@ -13,10 +13,11 @@
 static constexpr double THETA_DOT_LIMIT = 14.0;   // rad/s
 
 // ── lli_loop ─────────────────────────────────────────────────────────────────
-// The 20 Hz real-time control loop. This is the core of the LLI — it runs
-// continuously during training and ties the hardware to the RL client.
+// The real-time control loop (LOOP_HZ Hz, set at compile time). This is the
+// core of the LLI — it runs continuously during training and ties the hardware
+// to the RL client.
 //
-// What happens every tick (50 ms):
+// What happens every tick (LOOP_PERIOD_MS ms):
 //   1. Sleep until the next scheduled tick time.
 //   2. Read both encoders → compute state {x, ẋ, θ, θ̇}.
 //   3. Check safety conditions (limit sensors, angular velocity).
@@ -67,7 +68,7 @@ void lli_loop(EncoderState& enc_carriage, EncoderState& enc_pendulum,
     StateEstimator estimator;       // owns the Butterworth filter state; reset between episodes
     MotorCommand   cmd{0, 0, 0};    // the most recently received command; starts as "coast"
     int      episode_count = 0;     // tracks how many episodes have ended; used to schedule full vs fast re-home
-    uint64_t tick_count    = 0;     // total ticks since loop start; used to print status every 0.5 s
+    uint64_t tick_count    = 0;     // total ticks since loop start; used to print status every half second
 
     // Fixed-rate timing: we compute an absolute "next tick" time and sleep until it.
     // This is more accurate than sleeping for a fixed duration because it automatically
@@ -107,7 +108,7 @@ void lli_loop(EncoderState& enc_carriage, EncoderState& enc_pendulum,
         // ZMQ_NOBLOCK: if no subscriber is connected the packet is silently dropped.
         zmq_send(pub, &pkt, sizeof(pkt), ZMQ_NOBLOCK);
 
-        // ── Console display (every LOOP_HZ/2 ticks = 0.5 s) ─────────────────
+        // ── Console display (every LOOP_HZ/2 ticks = half a second) ─────────
         if (++tick_count % (LOOP_HZ / 2) == 0) {
             std::printf("\r[lli]  x=%+6.3f m  x_dot=%+6.3f m/s  θ=%+6.3f rad  θ_dot=%+7.3f rad/s   ",
                         pkt.x, pkt.x_dot, pkt.theta, pkt.theta_dot);
@@ -139,8 +140,9 @@ void lli_loop(EncoderState& enc_carriage, EncoderState& enc_pendulum,
             //   Slot 2 — the TCP receive buffer on the Pi side.
             // When Slot 1 is full ZMQ stops draining from TCP, so Slot 2 fills.
             // The first flush empties Slot 1; that signals ZMQ to pull the TCP
-            // message into Slot 1.  The 50 ms sleep lets the delivery complete;
-            // the second flush removes it.
+            // message into Slot 1.  A short sleep lets the TCP delivery complete;
+            // the second flush removes it. (This delay is a ZMQ pipeline constant,
+            // not a function of LOOP_PERIOD_MS.)
             //
             // Without this a stale request_home that the client sent just before
             // detecting that homing was underway could survive the first flush
@@ -178,8 +180,8 @@ void lli_loop(EncoderState& enc_carriage, EncoderState& enc_pendulum,
 
             // Publish a HOMING_STARTED acknowledgement (episode_status = 3) so the
             // client can confirm the request was received and homing is beginning.
-            // Without this, the client would have to infer homing from 200 ms of silence,
-            // which is less reliable.
+            // Without this, the client would have to infer homing from several ticks of
+            // silence, which is less reliable.
             {
                 StatePacket ack = estimator.update(enc_carriage, enc_pendulum);
                 ack.episode_status = 3;   // 3 = HOMING_STARTED
@@ -190,13 +192,14 @@ void lli_loop(EncoderState& enc_carriage, EncoderState& enc_pendulum,
                            : homing_center_only(enc_carriage, enc_pendulum, done);
             if (!ok) break;
 
-            // Double-flush the command queue with a 50 ms gap between flushes.
+            // Double-flush the command queue with a short gap between flushes.
             // ZeroMQ's pipeline has two-message capacity: one in the PULL socket's
             // receive buffer (RCVHWM=1) and one held in the TCP send buffer on the
             // client side. The first flush drains the PULL buffer, which signals
-            // ZMQ to accept the queued TCP message. The 50 ms sleep lets that
-            // delivery complete, then the second flush removes it. Without the
-            // second flush a stale request_home could trigger a second homing.
+            // ZMQ to accept the queued TCP message. The sleep lets that TCP delivery
+            // complete, then the second flush removes it. Without the second flush
+            // a stale request_home could trigger a second homing. (This delay is a
+            // ZMQ pipeline constant, not a function of LOOP_PERIOD_MS.)
             { MotorCommand tmp; while (zmq_recv(pull, &tmp, sizeof(tmp), ZMQ_NOBLOCK) > 0) {} }
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
             { MotorCommand tmp; while (zmq_recv(pull, &tmp, sizeof(tmp), ZMQ_NOBLOCK) > 0) {} }

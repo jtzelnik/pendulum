@@ -56,7 +56,7 @@ inline constexpr double RAD_PER_COUNT = (2.0 * PI) / COUNTS_PER_REV;
 //   - Fc is always set to Fs/4 (quarter of the sample rate) regardless of LOOP_HZ.
 //     This is intentional: Fc/Fs = 0.25 keeps the filter at 50 % of Nyquist for any rate,
 //     so the coefficients below are CONSTANT and do not need recomputing when LOOP_HZ changes.
-//   - At 20 Hz: Fc = 5 Hz (passes pendulum dynamics < ~3 Hz, attenuates noise above).
+//   - Effective Fc scales with LOOP_HZ (e.g. 5 Hz at 20 Hz, 12.5 Hz at 50 Hz).
 //   - Designed via bilinear transform: K = tan(π × Fc / Fs) = tan(π/4) = 1.0 (exact always).
 //     Fc = Fs/4 is the special case where K = 1, giving the clean closed-form coefficients
 //     below and eliminating the A1 feedback term (A1 = 0 exactly).

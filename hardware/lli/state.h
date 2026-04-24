@@ -45,7 +45,7 @@ struct Biquad {
 // Converts raw encoder counts into the full physical state {x, ẋ, θ, θ̇}.
 //
 // One instance lives for the lifetime of the control loop. Calling update()
-// exactly once per 20 Hz tick keeps the filter's internal delay-line state
+// exactly once per tick keeps the filter's internal delay-line state
 // contiguous and correct. Resetting the instance (= StateEstimator{}) between
 // episodes clears all filter memory so velocity estimates start fresh.
 //
