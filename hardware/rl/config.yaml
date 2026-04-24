@@ -27,7 +27,7 @@ network:
   hidden_sizes: [256, 256]   # two hidden layers, ReLU; input=5, output=3
 
 training:
-  max_steps:      150000
-  warmup_steps:   5000        # take fully random actions for this many steps before using the network
+  max_steps:      500000
+  warmup_steps:   2400        # take fully random actions for this many steps before using the network
   eval_interval:  5           # run one greedy inference episode every N episodes
   checkpoint_dir: "checkpoints"

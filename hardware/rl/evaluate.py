@@ -110,8 +110,13 @@ def main() -> None:
         target_update_interval = dqn_cfg["target_update_interval"],   # not used during eval; required by constructor
         device                 = device,                           # maps checkpoint tensors to the right device
     )
-    agent.load(args.checkpoint)                      # restore policy_net, target_net, and optimizer state
-    print(f"Loaded {args.checkpoint}  ({device})")   # confirm which file and device are in use
+    ckpt_path = args.checkpoint
+    if ckpt_path.endswith(".onnx"):
+        out_path = str(Path(ckpt_path).with_name(Path(ckpt_path).stem + "_from_onnx.pt"))
+        DQNAgent.load_onnx(ckpt_path, out_path, net_cfg["hidden_sizes"])
+        ckpt_path = out_path
+    agent.load(ckpt_path)                      # restore policy_net, target_net, and optimizer state
+    print(f"Loaded {ckpt_path}  ({device})")   # confirm which file and device are in use
 
     returns = []   # collect normalised returns across episodes for the summary
     try:

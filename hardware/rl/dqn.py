@@ -266,10 +266,11 @@ class DQNAgent:
             **extras: Arbitrary scalar values to embed in the checkpoint dict.
         """
         torch.save({
-            "policy_net": self.policy_net.state_dict(),   # trained network weights
-            "target_net": self.target_net.state_dict(),   # frozen target weights
-            "optimizer":  self.optimizer.state_dict(),    # Adam moment estimates and step count
-            **extras,                                     # e.g. total_steps, episode
+            "policy_net":    self.policy_net.state_dict(),   # trained network weights
+            "target_net":    self.target_net.state_dict(),   # frozen target weights
+            "optimizer":     self.optimizer.state_dict(),    # Adam moment estimates and step count
+            "replay_buffer": list(self.buffer._buf),         # full transition history for seamless resume
+            **extras,                                        # e.g. total_steps, episode
         }, path)
 
     def load(self, path: str) -> dict:
@@ -282,14 +283,101 @@ class DQNAgent:
         map_location ensures a GPU-saved checkpoint loads correctly on CPU
         and vice versa.
 
+        Checkpoints converted from ONNX (via load_onnx()) have no optimizer
+        key; in that case Adam starts fresh from its default initial state.
+
         Args:
-            path: Path to the .pt checkpoint file written by save().
+            path: Path to the .pt checkpoint file written by save() or load_onnx().
         Returns:
             Dict of non-network keys stored in the checkpoint.
         """
         ckpt = torch.load(path, map_location=self.device)
         self.policy_net.load_state_dict(ckpt["policy_net"])   # restore trained weights
         self.target_net.load_state_dict(ckpt["target_net"])   # restore target weights
-        self.optimizer.load_state_dict(ckpt["optimizer"])     # restore Adam state so training continues smoothly
+        if "optimizer" in ckpt:
+            self.optimizer.load_state_dict(ckpt["optimizer"])   # restore Adam state so training continues smoothly
+        else:
+            print("[load] no optimizer state in checkpoint — Adam starts fresh")
+        if "replay_buffer" in ckpt:
+            self.buffer._buf.extend(ckpt["replay_buffer"])       # repopulate buffer so training resumes without a cold-start
+            print(f"[load] restored {len(self.buffer)} transitions into replay buffer")
         return {k: v for k, v in ckpt.items()
-                if k not in ("policy_net", "target_net", "optimizer")}   # return training-loop scalars to caller
+                if k not in ("policy_net", "target_net", "optimizer", "replay_buffer")}   # return training-loop scalars to caller
+
+    @staticmethod
+    def load_onnx(onnx_path: str, out_pt_path: str, hidden_sizes: List[int]) -> None:
+        """Convert an ONNX weight file into a .pt checkpoint compatible with load().
+
+        Extracts network weights from the ONNX graph and packages them into the
+        same dict format that save() writes.  Both policy_net and target_net are
+        set to the extracted weights.  Optimizer state is absent — training
+        resumes with a fresh Adam optimiser.
+
+        Parameter matching (tried in order):
+          1. By name — works when the ONNX was exported from a PyTorch DQN with
+             the same architecture; initializer names equal the state_dict keys
+             (e.g. 'net.0.weight', 'net.2.bias').
+          2. By shape/position — iterates ONNX initializers in graph order and
+             maps each to the corresponding expected parameter by shape.  Handles
+             external tools that assign generic names.
+
+        Args:
+            onnx_path:    Path to the source .onnx file.
+            out_pt_path:  Path to write the converted .pt checkpoint.
+            hidden_sizes: MLP hidden layer widths (must match the ONNX model,
+                          e.g. [256, 256]).
+        Raises:
+            ImportError:  if the 'onnx' package is not installed.
+            ValueError:   if the number of matched weight tensors does not match
+                          the expected parameter count for the given hidden_sizes.
+        """
+        try:
+            import onnx
+            from onnx import numpy_helper
+        except ImportError:
+            raise ImportError(
+                "pip install onnx   (required to load .onnx checkpoints)"
+            )
+
+        # Build expected parameter names and shapes from a reference model instance.
+        ref = DQN(DQNAgent.OBS_DIM, DQNAgent.N_ACTIONS, hidden_sizes)
+        expected = [(name, tuple(p.shape)) for name, p in ref.named_parameters()]
+        # e.g. [('net.0.weight', (256, 5)), ('net.0.bias', (256,)), ...]
+
+        onnx_model = onnx.load(onnx_path)
+
+        # Attempt 1: match by parameter name.
+        by_name = {init.name: numpy_helper.to_array(init)
+                   for init in onnx_model.graph.initializer}
+        if all(name in by_name for name, _ in expected):
+            state_dict = {
+                name: torch.tensor(by_name[name].copy())
+                for name, _ in expected
+            }
+            print("[onnx→pt] matched weights by parameter name")
+        else:
+            # Attempt 2: filter initializers whose shape appears in the expected set,
+            # then match positionally in graph order.  Works for standard GEMM/Linear
+            # layers where weights and biases appear in forward-pass order.
+            expected_shapes = {shape for _, shape in expected}
+            candidates = [
+                init for init in onnx_model.graph.initializer
+                if tuple(init.dims) in expected_shapes
+            ]
+            if len(candidates) != len(expected):
+                raise ValueError(
+                    f"Expected {len(expected)} weight tensors for "
+                    f"hidden_sizes={hidden_sizes}, "
+                    f"found {len(candidates)} matching shapes in '{onnx_path}'.\n"
+                    f"Confirm the ONNX architecture is "
+                    f"input={DQNAgent.OBS_DIM} → {hidden_sizes} → "
+                    f"output={DQNAgent.N_ACTIONS}."
+                )
+            state_dict = {
+                name: torch.tensor(numpy_helper.to_array(init).copy())
+                for (name, _), init in zip(expected, candidates)
+            }
+            print("[onnx→pt] matched weights by shape/position (ONNX names differed)")
+
+        torch.save({"policy_net": state_dict, "target_net": state_dict}, out_pt_path)
+        print(f"[onnx→pt] saved → {out_pt_path}")

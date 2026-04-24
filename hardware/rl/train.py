@@ -180,11 +180,17 @@ def main() -> None:
     best_return  = -float("inf")
 
     if args.checkpoint:
-        extras      = agent.load(args.checkpoint)
+        ckpt_path = args.checkpoint
+        if ckpt_path.endswith(".onnx"):
+            out_path = str(Path(ckpt_path).with_name(Path(ckpt_path).stem + "_from_onnx.pt"))
+            DQNAgent.load_onnx(ckpt_path, out_path, net_cfg["hidden_sizes"])
+            ckpt_path = out_path
+            print(f"[onnx] converted — no optimizer state, Adam starts fresh, warmup skipped")
+        extras      = agent.load(ckpt_path)
         total_steps = extras.get("total_steps", tr["warmup_steps"])   # resume step counter; default skips warmup
         episode     = extras.get("episode", 0)                         # resume episode counter
         best_return = extras.get("best_return", -float("inf"))
-        print(f"Resumed from {args.checkpoint}  "
+        print(f"Resumed from {ckpt_path}  "
               f"(total_steps={total_steps}, episode={episode})")
 
     next_eval_ep = episode + tr["eval_interval"]   # first eval N episodes from now
