@@ -195,8 +195,10 @@ def main() -> None:
 
     next_eval_ep = episode + tr["eval_interval"]   # first eval N episodes from now
 
+    warmup_msg = (f"Warmup {tr['warmup_steps']} steps (random). "
+                  if total_steps < tr["warmup_steps"] else "Warmup already complete. ")
     print(f"Training for {tr['max_steps']} env steps. "
-          f"Warmup {tr['warmup_steps']} steps (random). "
+          f"{warmup_msg}"
           f"Inference every {tr['eval_interval']} episodes.")
 
     try:
