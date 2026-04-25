@@ -193,7 +193,9 @@ def main() -> None:
         print(f"Resumed from {ckpt_path}  "
               f"(total_steps={total_steps}, episode={episode})")
 
-    next_eval_ep = episode + tr["eval_interval"]   # first eval N episodes from now
+    # Round up to the next eval_interval multiple so inference always lands on
+    # episode 10, 20, 30, ... regardless of where training was resumed from.
+    next_eval_ep = ((episode // tr["eval_interval"]) + 1) * tr["eval_interval"]
 
     warmup_msg = (f"Warmup {tr['warmup_steps']} steps (random). "
                   if total_steps < tr["warmup_steps"] else "Warmup already complete. ")
