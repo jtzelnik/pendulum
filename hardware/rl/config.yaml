@@ -16,8 +16,8 @@ episode:
   limit_penalty: -400.0   # added to reward on episode_status == 1 (limit sensor hit)
 
 dqn:
-  learning_rate:           0.003
-  epsilon:                 0.2   # fixed ε-greedy exploration rate (not decayed for DQN)
+  learning_rate:           0.00001
+  epsilon:                 0.0001  # fixed ε-greedy exploration rate (not decayed for DQN)
   gamma:                   0.995
   buffer_size:             50000
   batch_size:              1024
