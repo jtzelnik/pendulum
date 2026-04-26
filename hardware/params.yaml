@@ -1,0 +1,9 @@
+pendulum:
+  omega_rad_s: 4.10767
+  kv_proxy: 0.03243
+cart:
+  tau_s: 0.08483
+  kU: 0.0486177
+  kU_units: (m/s)/V
+  fc: 0.01523
+  fd: 0.0

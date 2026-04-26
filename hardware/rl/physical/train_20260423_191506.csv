@@ -1,0 +1,3 @@
+episode,total_steps,ep_len,norm_ret,mean_loss,episode_status
+1,800,800,-0.441367,0.000000,0
+2,1600,800,-0.276198,0.009826,0

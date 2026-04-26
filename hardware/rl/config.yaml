@@ -16,8 +16,8 @@ episode:
   limit_penalty: -400.0   # added to reward on episode_status == 1 (limit sensor hit)
 
 dqn:
-  learning_rate:           0.0003
-  epsilon:                 0.2   # fixed ε-greedy exploration rate (not decayed for DQN)
+  learning_rate:           0.000005
+  epsilon:                 0.005   # fixed ε-greedy exploration rate (not decayed for DQN)
   gamma:                   0.995
   buffer_size:             50000
   batch_size:              1024
@@ -27,7 +27,7 @@ network:
   hidden_sizes: [256, 256]   # two hidden layers, ReLU; input=5, output=3
 
 training:
-  max_steps:      500000
+  max_steps:      1000000
   warmup_steps:   2400        # take fully random actions for this many steps before using the network
   eval_interval:  10          # run one greedy inference episode every N episodes
   checkpoint_dir: "checkpoints"

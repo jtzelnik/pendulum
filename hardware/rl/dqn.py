@@ -356,13 +356,17 @@ class DQNAgent:
             }
             print("[onnx→pt] matched weights by parameter name")
         else:
-            # Attempt 2: filter initializers whose shape appears in the expected set,
-            # then match positionally in graph order.  Works for standard GEMM/Linear
-            # layers where weights and biases appear in forward-pass order.
+            # Attempt 2: filter initializers whose shape (or its transpose) appears
+            # in the expected set, then match positionally in graph order.  Some
+            # exporters (TF, JAX, stable-baselines3) store Linear weights as
+            # (in, out) rather than PyTorch's (out, in), so we accept both and
+            # transpose on load when needed.
             expected_shapes = {shape for _, shape in expected}
+            expected_shapes_T = {shape[::-1] for shape in expected_shapes if len(shape) == 2}
+
             candidates = [
                 init for init in onnx_model.graph.initializer
-                if tuple(init.dims) in expected_shapes
+                if tuple(init.dims) in expected_shapes or tuple(init.dims) in expected_shapes_T
             ]
             if len(candidates) != len(expected):
                 raise ValueError(
@@ -373,10 +377,12 @@ class DQNAgent:
                     f"input={DQNAgent.OBS_DIM} → {hidden_sizes} → "
                     f"output={DQNAgent.N_ACTIONS}."
                 )
-            state_dict = {
-                name: torch.tensor(numpy_helper.to_array(init).copy())
-                for (name, _), init in zip(expected, candidates)
-            }
+            state_dict = {}
+            for (name, exp_shape), init in zip(expected, candidates):
+                t = torch.tensor(numpy_helper.to_array(init).copy())
+                if t.shape != torch.Size(exp_shape):
+                    t = t.T   # stored transposed — flip to (out, in)
+                state_dict[name] = t
             print("[onnx→pt] matched weights by shape/position (ONNX names differed)")
 
         torch.save({"policy_net": state_dict, "target_net": state_dict}, out_pt_path)
