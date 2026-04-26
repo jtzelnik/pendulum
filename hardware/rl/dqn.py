@@ -378,10 +378,10 @@ class DQNAgent:
                     f"output={DQNAgent.N_ACTIONS}."
                 )
             state_dict = {}
-            for (name, exp_shape), init in zip(expected, candidates):
+            for (name, _), init in zip(expected, candidates):
                 t = torch.tensor(numpy_helper.to_array(init).copy())
-                if t.shape != torch.Size(exp_shape):
-                    t = t.T   # stored transposed — flip to (out, in)
+                if t.dim() == 2:
+                    t = t.T.contiguous()  # ONNX MatMul uses (in,out); PyTorch Linear expects (out,in)
                 state_dict[name] = t
             print("[onnx→pt] matched weights by shape/position (ONNX names differed)")
 

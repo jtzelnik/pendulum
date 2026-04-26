@@ -166,8 +166,11 @@ def main() -> None:
         device                 = device,                           # 'cpu' or 'cuda'
     )
 
-    ckpt_dir = Path(__file__).parent / tr["checkpoint_dir"]   # resolve checkpoint dir relative to this script
-    ckpt_dir.mkdir(parents=True, exist_ok=True)               # create the directory tree if it doesn't already exist
+    if args.checkpoint:
+        ckpt_dir = Path(args.checkpoint).parent.resolve()
+    else:
+        ckpt_dir = Path(__file__).parent / tr["checkpoint_dir"]
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     log_path   = ckpt_dir / f"train_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
     log_file   = open(log_path, "w", newline="")
