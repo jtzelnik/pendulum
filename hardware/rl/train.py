@@ -22,7 +22,7 @@ How the training loop works (high level):
          - Each call draws a fresh random 1024-sample batch from the buffer.
          - This ensures the network gets more updates from longer, more
            informative episodes.
-    4. Inference evaluation: every eval_interval (5000) env steps, run
+    4. Inference evaluation: every eval_interval , run
        one fully greedy episode (no random actions) and report the
        normalised return.  This is the honest measure of policy quality.
        A checkpoint is saved after every evaluation.

@@ -37,7 +37,7 @@ Two TCP channels over the static ethernet link:
 
 | Direction       | Socket pair       | Port | Content                          |
 |-----------------|-------------------|------|----------------------------------|
-| Pi → PC         | ZMQ_PUB / ZMQ_SUB | 5555 | `StatePacket` at 50 Hz (48 bytes) |
+| Pi → PC         | ZMQ_PUB / ZMQ_SUB | 5555 | `StatePacket` at 20 Hz (48 bytes) |
 | PC → Pi         | ZMQ_PUSH / ZMQ_PULL | 5556 | `MotorCommand` (8 bytes)         |
 
 **StatePacket** (48 bytes, little-endian):

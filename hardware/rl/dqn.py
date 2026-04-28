@@ -1,7 +1,7 @@
 """
 DQN agent: experience-replay buffer, ε-greedy policy, and the Bellman update.
 
-Key ideas explained for beginners:
+Key ideas explained:
 
   Replay buffer       — Stores the last 50 000 (state, action, reward,
                         next_state, done) tuples.  Training samples a random

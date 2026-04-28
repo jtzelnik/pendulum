@@ -1,18 +1,6 @@
 """
 Deep Q-Network (DQN) — the neural network that learns to estimate Q-values.
 
-What is a Q-value?
-    Q(s, a) is the total reward the agent expects to collect for the rest of
-    the episode if it takes action a in state s and then acts optimally from
-    that point on.  The agent picks the action with the highest Q-value.
-
-Why a neural network instead of a lookup table?
-    The state space is continuous (5 floats), so there are infinitely many
-    possible states — a table is impossible.  The network learns to approximate
-    Q(s, a) for any state by generalising from the (state, reward) examples it
-    has seen.  Training adjusts the weights until Q(s, a) accurately predicts
-    long-term reward.
-
 Architecture:
     Input (5) → Linear(5→256) → ReLU
               → Linear(256→256) → ReLU
