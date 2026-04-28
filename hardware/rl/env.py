@@ -1,5 +1,5 @@
 """
-Gymnasium-style environment wrapper around the live ZeroMQ connection to the LLI.
+Environment wrapper around the live ZeroMQ connection to the LLI.
 
 This class bridges the RL training loop and the physical hardware. It translates
 between the three-action discrete command space (left / coast / right) and the
@@ -10,12 +10,6 @@ be ready before each new episode.
 Observation vector (5-D):
     [sin θ,  cos θ,  θ_dot,  x,  x_dot]
 
-Why sin/cos instead of raw θ?
-    θ is an angle, so it wraps around at ±π. If the pendulum passes through
-    the upright position, θ might jump from +3.14 to -3.14 in one step. To
-    the neural network that looks like an enormous state change, even though
-    the physical change was tiny. Using (sin θ, cos θ) gives a smooth,
-    unique representation for every angle without any discontinuity.
 
 Actions (3 discrete integers):
     0 → duty = −DUTY  (drive left)
