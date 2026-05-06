@@ -1,5 +1,5 @@
 # Control loop frequency in Hz.
-# Override at build time: make LOOP_HZ=50
+# Override at build time: make LOOP_HZ=<n>
 # Must match loop_hz in hardware/rl/config.yaml — changing it requires a rebuild.
 LOOP_HZ  ?= 20
 

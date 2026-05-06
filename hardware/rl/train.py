@@ -6,7 +6,7 @@ How the training loop works (high level):
   The agent alternates between two activities: collecting experience on the
   real hardware, and updating the neural network from that experience.
 
-  Outer loop: runs episodes until total_steps reaches max_steps (150 000).
+  Outer loop: runs episodes until total_steps reaches max_steps (1 000 000).
     1. env.reset()  — blocks until the Pi finishes homing the carriage
                       (~10–120 s depending on where the carriage is).
     2. Episode collection (inner loop, one iteration per control tick):
@@ -157,8 +157,8 @@ def main() -> None:
     )
     agent = DQNAgent(                                              # construct policy net, target net, buffer, and optimiser
         hidden_sizes           = net_cfg["hidden_sizes"],          # [256, 256] from appendix S3
-        lr                     = dqn_cfg["learning_rate"],         # 0.0003 — Adam learning rate
-        epsilon                = dqn_cfg["epsilon"],               # 0.178 — fixed exploration rate
+        lr                     = dqn_cfg["learning_rate"],         # 0.000005 — Adam learning rate
+        epsilon                = dqn_cfg["epsilon"],               # 0.005 — fixed exploration rate
         gamma                  = dqn_cfg["gamma"],                 # 0.995 — discount factor
         buffer_size            = dqn_cfg["buffer_size"],           # 50 000 transitions
         batch_size             = dqn_cfg["batch_size"],            # 1 024 per gradient step

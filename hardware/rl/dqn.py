@@ -28,7 +28,7 @@ Key ideas explained:
                         single very wrong prediction at the start of training
                         cannot send the network weights flying off to infinity.
 
-  ε-greedy            — With probability ε (0.178) the agent picks a random
+  ε-greedy            — With probability ε (0.005) the agent picks a random
                         action instead of the best one.  This forces the agent
                         to visit states it would not choose on its own, which
                         is necessary for learning — if you only do what you
@@ -135,8 +135,8 @@ class DQNAgent:
 
         Args:
             hidden_sizes:           Layer widths for the MLP, e.g. [256, 256].
-            lr:                     Adam learning rate (0.0003).
-            epsilon:                Fixed ε-greedy exploration rate (0.178).
+            lr:                     Adam learning rate (0.000005).
+            epsilon:                Fixed ε-greedy exploration rate (0.005).
             gamma:                  Discount factor γ for the Bellman target (0.995).
             buffer_size:            Replay buffer capacity (50 000).
             batch_size:             Mini-batch size for each gradient step (1024).

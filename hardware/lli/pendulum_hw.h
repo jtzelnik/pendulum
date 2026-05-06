@@ -25,7 +25,7 @@ inline constexpr long long COUNTS_PER_REV = 2400;
 
 // ── Loop frequency ────────────────────────────────────────────────────────────
 // LOOP_HZ is injected by the Makefile via -D LOOP_HZ=<n> (default 20).
-// Override at build time: make LOOP_HZ=50
+// Override at build time: make LOOP_HZ=<n>
 // Must match loop_hz in hardware/rl/config.yaml.
 // Exact integer-period frequencies work cleanly: 10, 20, 25, 50, 100 Hz.
 #ifndef LOOP_HZ

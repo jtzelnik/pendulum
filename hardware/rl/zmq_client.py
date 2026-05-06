@@ -17,7 +17,7 @@ class ZMQClient:
 
     Lifetime: construct once before the training loop, call close() in the
     finally block.  Both sockets are blocking by default; recv_state() will
-    block until the next 50 Hz packet arrives (~20 ms), which naturally
+    block until the next 20 Hz packet arrives (~50 ms), which naturally
     paces the control loop.
     """
 
@@ -43,7 +43,7 @@ class ZMQClient:
     def recv_state(self) -> StatePacket:
         """Block until the next StatePacket arrives and return it decoded.
 
-        The 50 Hz LLI tick means this normally returns within ~20 ms.
+        The 20 Hz LLI tick means this normally returns within ~50 ms.
         During homing, no packets are sent, so this will block for up to
         ~120 s — that is expected and handled by env.reset().
         """
