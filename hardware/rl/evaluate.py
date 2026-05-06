@@ -26,6 +26,8 @@ Usage:
 """
 
 import argparse          # CLI argument parsing — checkpoint path and episode count
+import csv               # CSV writer for optional per-timestep logging
+import datetime          # timestamped filename when --log-csv is set
 import math              # atan2 / degrees for live angle display
 import yaml              # parse config.yaml for all hardware / episode parameters
 import torch             # device selection (CPU / CUDA)
@@ -70,6 +72,11 @@ def main() -> None:
         type=int,
         default=1,
         help="number of greedy inference episodes to run (default: 1)",
+    )
+    parser.add_argument(                                    # optional: write per-timestep data to CSV
+        "--log-csv",
+        action="store_true",
+        help="write per-timestep x, x_dot, theta, theta_dot, command to a timestamped CSV file",
     )
     args = parser.parse_args()   # reads sys.argv and fills args.checkpoint, args.episodes
 
@@ -118,20 +125,46 @@ def main() -> None:
     agent.load(ckpt_path)                      # restore policy_net, target_net, and optimizer state
     print(f"Loaded {ckpt_path}  ({device})")   # confirm which file and device are in use
 
-    returns = []   # collect normalised returns across episodes for the summary
+    returns    = []    # collect normalised returns across episodes for the summary
+    csv_file   = None
+    csv_writer = None
+    if args.log_csv:
+        ts         = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        csv_path   = Path(__file__).parent / f"eval_{ts}.csv"
+        csv_file   = open(csv_path, "w", newline="")
+        csv_writer = csv.writer(csv_file)
+        csv_writer.writerow(["episode", "step", "x", "x_dot", "theta", "theta_dot", "command", "reward"])
+        print(f"Logging to {csv_path}")
+
     try:
         for i in range(args.episodes):          # run the requested number of evaluation episodes
-            obs   = env.reset()                  # block until LLI homing completes; get first observation
-            total = 0.0                          # raw cumulative reward for this episode
-            steps = 0                            # steps taken before episode ended
+            obs        = env.reset()                  # block until LLI homing completes; get first observation
+            total      = 0.0                          # raw cumulative reward for this episode
+            steps      = 0                            # steps taken before episode ended
+            prev_theta = None                         # for incremental unwrapping across steps
 
             for _ in range(ep["max_steps"]):
                 action = agent.select_action(obs, greedy=True)
                 obs, reward, done, info = env.step(action)
                 total += reward
                 steps += 1
-                theta_deg  = math.degrees(math.atan2(obs[0], obs[1]))
+                theta_raw = math.atan2(obs[0], obs[1])
+                if prev_theta is None:
+                    theta_unwrapped = theta_raw
+                else:
+                    delta           = (theta_raw - prev_theta + math.pi) % (2 * math.pi) - math.pi
+                    theta_unwrapped = prev_theta + delta
+                prev_theta = theta_unwrapped
+                theta_deg  = math.degrees(theta_raw)
                 action_chr = ("L", "·", "R")[action]
+                if csv_writer is not None:
+                    csv_writer.writerow([
+                        i + 1, steps,
+                        obs[3], obs[4],                        # x, x_dot
+                        theta_unwrapped, obs[2],               # theta (unwrapped), theta_dot
+                        (-hw["duty"], 0, hw["duty"])[action],  # command
+                        reward,
+                    ])
                 print(
                     f"\r  ep {i+1:3d}  step {steps:3d}/{ep['max_steps']}"
                     f"  [{action_chr}]  θ={theta_deg:+6.1f}°  dθ={obs[2]:+6.2f}r/s"
@@ -154,6 +187,8 @@ def main() -> None:
     finally:                    # always run — ensure motor is stopped even on exception
         env.estop()             # send emergency-stop command to the LLI
         client.close()          # tear down ZMQ sockets cleanly
+        if csv_file is not None:
+            csv_file.close()
 
     if returns:   # only print summary if at least one episode completed
         # mean = average normalised return across all evaluated episodes

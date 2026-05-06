@@ -5,7 +5,7 @@
 
 // ── Pin assignments ──────────────────────────────────────────────────────────
 // These are BCM (Broadcom chip) GPIO numbers — NOT the physical pin numbers
-// printed on the Pi header. They match the wiring described in CLAUDE.md.
+// printed on the Pi header.
 inline constexpr unsigned ENC1_A     = 17, ENC1_B    = 27;  // carriage encoder: quadrature channel A and B
 inline constexpr unsigned ENC2_A     = 22, ENC2_B    = 26;  // pendulum encoder: quadrature channel A and B
 inline constexpr unsigned PROX_NEAR  = 21, PROX_FAR  = 20;  // proximity (limit) sensors: near stop and far stop
